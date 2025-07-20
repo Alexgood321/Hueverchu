@@ -1,63 +1,61 @@
 import requests
 import subprocess
-import os
 
 # Настройки
 URL = "https://raw.githubusercontent.com/Alexgood321/proxy-config/main/Server.txt"
 MAX_PING = 300
-OUTPUT_DIR = "output"
-OUTPUT_FILE = "shadowrocket.txt"
-LOG_FILE = "ping_debug.txt"
 
 # Получение списка ссылок
 r = requests.get(URL)
 lines = r.text.strip().splitlines()
+
 print(f"#DEBUG: загружено строк: {len(lines)}")
 
-valid_links = []
-log_lines = []
+good_nodes = []
+debug_log = ""
 
 for i, line in enumerate(lines):
+    if not line.strip():
+        continue
     try:
-        if not line.startswith("vless://"):
-            log_lines.append(f"[{i}] ❌ Пропуск — не начинается с vless:// → {line}")
-            continue
-
-        after_at = line.split("@")
-        if len(after_at) < 2:
-            log_lines.append(f"[{i}] ❌ Ошибка — отсутствует '@' в ссылке → {line}")
-            continue
-
-        address_port = after_at[1].split("?")[0].split("/")[0]
-        address = address_port.split(":")[0]
-
-        # Пинг
-        ping = subprocess.run(["ping", "-c", "1", "-W", "1", address], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        output = ping.stdout.decode()
-
-        if "time=" in output:
-            time_ms = float(output.split("time=")[1].split(" ")[0])
-            if time_ms < MAX_PING:
-                valid_links.append(line)
-                log_lines.append(f"[{i}] ✅ {address} — OK ({time_ms} ms)")
-            else:
-                log_lines.append(f"[{i}] ⚠️ {address} — Пинг слишком высокий: {time_ms} ms")
+        debug_log += f"\nОбработка строки #{i}:\n{line}\n"
+        if "?" in line:
+            address = line.split("?")[0].split("@")[-1]
         else:
-            log_lines.append(f"[{i}] ❌ {address} — нет ответа (timeout)")
+            address = line.split("//")[1].split("@")[-1].split(":")[0]
+        result = subprocess.run(["ping", "-c", "1", "-W", "1", address], capture_output=True, text=True)
+        if "time=" in result.stdout:
+            ping_ms = float(result.stdout.split("time=")[-1].split()[0])
+        else:
+            ping_ms = 9999
+
+        debug_log += f"Ping = {ping_ms} мс\n"
+        if ping_ms <= MAX_PING:
+            good_nodes.append(line)
+        else:
+            debug_log += "Пропуск: высокий пинг\n"
     except Exception as e:
-        log_lines.append(f"[{i}] ❌ Ошибка парсинга строки: {line}\nПричина: {e}")
+        debug_log += f"Ошибка: {str(e)}\n"
+        continue
 
-# Сохраняем рабочие ссылки
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-with open(f"{OUTPUT_DIR}/{OUTPUT_FILE}", "w") as f:
-    for link in valid_links:
-        f.write(link + "\n")
+# Shadowrocket
+shadowrocket_text = "\n".join(good_nodes)
 
-# Сохраняем лог
-with open(f"{OUTPUT_DIR}/{LOG_FILE}", "w") as f:
-    for log in log_lines:
-        f.write(log + "\n")
+# Clash
+clash_text = "proxies:\n"
+for idx, node in enumerate(good_nodes):
+    clash_text += f"  - name: Proxy{idx + 1}\n    type: vless\n    url: {node}\n"
 
-print(f"\nСоздано:")
-print(f"- {OUTPUT_FILE} — {len(valid_links)} строк")
-print(f"- {LOG_FILE} — полный лог")
+# Сохраняем файлы
+print("Создаю файлы...")
+
+with open("shadowrocket.txt", "w", encoding="utf-8") as f:
+    f.write(shadowrocket_text)
+
+with open("clash.yaml", "w", encoding="utf-8") as f:
+    f.write(clash_text)
+
+with open("ping_debug.txt", "w", encoding="utf-8") as f:
+    f.write(debug_log)
+
+print("✅ Файлы созданы: shadowrocket.txt, clash.yaml, ping_debug.txt")
