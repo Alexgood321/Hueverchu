@@ -1,77 +1,64 @@
 import requests
 import subprocess
 import yaml
+import base64
+import re
 
 # Настройки
 URL = "https://raw.githubusercontent.com/Alexgood321/proxy-config/main/Server.txt"
-MAX_PING = 300  # мс
+MAX_PING = 300
 
 # Получение списка ссылок
 r = requests.get(URL)
-lines = r.text.strip().splitlines()
+servers = r.text.strip().splitlines()
 
-# Фильтрация рабочих серверов по ping
-def ping(server):
+# Функция пинга
+def ping_server(url):
     try:
-        address = server.split('@')[1].split(':')[0]
-        subprocess.check_output(['ping', '-c', '1', '-W', '1', address])
-        return True
+        match = re.search(r'@([\d\.]+):(\d+)', url)
+        if not match:
+            return False
+        ip = match.group(1)
+        result = subprocess.run(['ping', '-c', '1', '-W', '1', ip], stdout=subprocess.DEVNULL)
+        return result.returncode == 0
     except:
         return False
 
-# Подготовка списка
-filtered = []
-for line in lines:
-    if line.startswith('vless://') and '@' in line and ':' in line:
-        if ping(line):
-            filtered.append(line)
+# Фильтрация
+filtered = [s for s in servers if ping_server(s)]
 
-# Формируем clash.yaml
-clash_config = {
+# Создание YAML
+config = {
     'proxies': [],
-    'proxy-groups': [
-        {
-            'name': 'auto',
-            'type': 'url-test',
-            'proxies': [],
-            'url': 'http://www.gstatic.com/generate_204',
-            'interval': 300
-        }
-    ],
-    'rules': ['MATCH,auto']
+    'proxy-groups': [],
+    'rules': []
 }
 
 for i, line in enumerate(filtered):
-    try:
-        uuid = line.split('://')[1].split('@')[0]
-        addr = line.split('@')[1].split(':')[0]
-        port = line.split('@')[1].split(':')[1].split('?')[0]
-
-        proxy = {
-            'name': f'server{i+1}',
-            'type': 'vless',
-            'server': addr,
-            'port': int(port),
-            'uuid': uuid,
-            'tls': True,
-            'cipher': 'auto',
-            'network': 'ws',
-            'ws-opts': {
-                'path': '/',
-                'headers': {'Host': addr}
+    match = re.search(r'@([\d\.]+):(\d+)', line)
+    if not match:
+        continue
+    server = match.group(1)
+    port = match.group(2)
+    config['proxies'].append({
+        'name': f'server{i+1}',
+        'type': 'vless',
+        'server': server,
+        'port': int(port),
+        'uuid': '00000000-0000-0000-0000-000000000000',
+        'tls': True,
+        'network': 'ws',
+        'ws-opts': {
+            'path': '/',
+            'headers': {
+                'Host': 'example.com'
             }
         }
-
-        clash_config['proxies'].append(proxy)
-        clash_config['proxy-groups'][0]['proxies'].append(f'server{i+1}')
-
-    except Exception as e:
-        print(f"Ошибка парсинга строки: {line} — {e}")
-        continue
+    })
 
 # Сохранение файлов
 with open('output/clash.yaml', 'w') as f:
-    yaml.dump(clash_config, f, sort_keys=False)
+    yaml.dump(config, f, sort_keys=False)
 
 with open('output/shadowrocket.txt', 'w') as f:
     for s in filtered:
