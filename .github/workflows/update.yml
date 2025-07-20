@@ -3,21 +3,25 @@ name: Update Configs
 on:
   push:
   workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'  # запуск каждый час
 
 jobs:
   update:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v3
 
     - name: Set up Python
       uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
 
     - name: Install dependencies
       run: |
-        pip install requests pyyaml idna
+        pip install requests pyyaml
 
-    - name: Run update script
+    - name: Run script
       run: python3 update.py
