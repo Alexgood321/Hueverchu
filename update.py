@@ -1,86 +1,58 @@
 import requests
-import yaml
+import subprocess
+import base64
+import os
 
 # Настройки
 URL = "https://raw.githubusercontent.com/Alexgood321/proxy-config/main/Server.txt"
 MAX_PING = 300
+OUTPUT_DIR = "output"
+OUTPUT_FILE = "shadowrocket.txt"
 
 # Получение списка ссылок
 r = requests.get(URL)
 lines = r.text.strip().splitlines()
+print(f"#DEBUG: загружено строк: {len(lines)}")
 
-print(f"DEBUG: загружено строк: {len(lines)}")
+valid_links = []
 
-# Загрузка и фильтрация серверов по пингу
-filtered = []
 for i, line in enumerate(lines):
     try:
-        print(f"DEBUG: строка #{i}: {line}")
         if not line.startswith("vless://"):
+            print(f"Пропуск: строка {i} не начинается с vless://")
             continue
-        vless_raw = line[8:]
-        uuid_part, address_part = vless_raw.split("@")
-        server_port_part = address_part.split("?")[0]
-        server, port = server_port_part.split(":")
-        port = int(port)
 
-        # Пинг
-        import subprocess
-        result = subprocess.run(["ping", "-c", "1", "-W", "1", server], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        output = result.stdout
+        encoded = line.split("vless://")[1].split("@")[0]
+        decoded = base64.b64decode(encoded + '==').decode('utf-8', errors='ignore')
+
+        # Сразу ищем хост (после @)
+        parts = line.split("@")
+        if len(parts) < 2:
+            raise Exception("URL не содержит @")
+
+        address = parts[1].split("?")[0].split(":")[0]
+
+        # Пинг сервера
+        ping = subprocess.run(["ping", "-c", "1", "-W", "1", address], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output = ping.stdout.decode()
+
         if "time=" in output:
-            ping_time = float(output.split("time=")[1].split(" ")[0])
-            if ping_time <= MAX_PING:
-                filtered.append(line)
-                print(f"✓ Пинг {ping_time}мс - OK: {server}")
+            time_ms = float(output.split("time=")[1].split(" ")[0])
+            if time_ms < MAX_PING:
+                print(f"+ Добавлен: {address} ({time_ms} ms)")
+                valid_links.append(line)
             else:
-                print(f"✗ Пинг {ping_time}мс - СЛИШКОМ ВЫСОКИЙ: {server}")
+                print(f"- Превышен пинг: {address} ({time_ms} ms)")
         else:
-            print(f"✗ Сервер не отвечает: {server}")
+            print(f"- Нет ответа: {address}")
     except Exception as e:
-        print(f"✗ Ошибка при обработке строки #{i}: {line}")
-        print("Причина:", e)
+        print(f"Ошибка при обработке строки #{i}: {line}")
+        print(f"Причина: {e}")
 
-# Создание shadowrocket.txt
-with open("output/shadowrocket.txt", "w") as f:
-    for line in filtered:
-        f.write(line + "\n")
-print("Файл shadowrocket.txt создан.")
+# Запись результата
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+with open(f"{OUTPUT_DIR}/{OUTPUT_FILE}", "w") as f:
+    for link in valid_links:
+        f.write(link + "\n")
 
-# Создание clash.yaml
-proxies = []
-for i, line in enumerate(filtered):
-    try:
-        vless_raw = line[8:]
-        uuid_part, address_part = vless_raw.split("@")
-        server_port_part = address_part.split("?")[0]
-        server, port = server_port_part.split(":")
-        port = int(port)
-        proxies.append({
-            "name": f"server{i}",
-            "type": "vless",
-            "server": server,
-            "port": port,
-            "uuid": uuid_part,
-            "tls": True
-        })
-    except Exception as e:
-        print(f"✗ Ошибка при создании proxy-конфига из строки #{i}: {line}")
-        print("Причина:", e)
-
-output_data = {
-    "proxies": proxies,
-    "proxy-groups": [
-        {
-            "name": "auto",
-            "type": "url-test",
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": 300,
-            "proxies": [f"server{i}" for i in range(len(proxies))]
-        }
-    ]
-}
-
-with open("output/clash.yaml", "w") as f:
-    yaml.dump(output_data, f, allow_unicode=True)
-print("Файл clash.yaml создан.")
+print(f"\nФайл {OUTPUT_FILE} создан. Всего подходящих ссылок: {len(valid_links)}")
