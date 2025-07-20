@@ -1,21 +1,27 @@
 import requests
 import yaml
-import subprocess
+import os
 
 # Настройки
 URL = "https://raw.githubusercontent.com/Alexgood321/proxy-config/main/Server.txt"
 MAX_PING = 300
 
-# Получаем список ссылок
-r = requests.get(URL)
-servers = r.text.strip().splitlines()
+try:
+    r = requests.get(URL)
+    servers = r.text.strip().splitlines()
+    print(f"DEBUG: загружено строк — {len(servers)}")
+except Exception as e:
+    print("Ошибка при загрузке Server.txt:", e)
+    exit(1)
 
-print(f"Загружено {len(servers)} строк")
+if not servers:
+    print("Server.txt пустой. Завершение.")
+    exit(1)
 
-# ⛔️ Временно отключаем фильтрацию по ping для отладки
+# Без фильтрации по ping
 filtered = servers
 
-# Создание clash.yaml
+# Подготовка config
 config = {
     'proxies': [],
     'proxy-groups': [],
@@ -23,24 +29,44 @@ config = {
 }
 
 for i, line in enumerate(filtered):
-    parts = line.split('@')[-1].split(':')
-    if len(parts) < 2:
+    try:
+        url = line.split('//')[-1]
+        addr_port = url.split('@')[-1].split(':')
+        server = addr_port[0]
+        port = int(addr_port[1].split('?')[0])
+
+        uuid = url.split(':')[1].split('@')[0]
+
+        config['proxies'].append({
+            'name': f'server{i}',
+            'type': 'vless',
+            'server': server,
+            'port': port,
+            'uuid': uuid,
+            'tls': True
+        })
+    except Exception as e:
+        print(f"Ошибка при обработке строки #{i}: {line}")
+        print("Причина:", e)
         continue
 
-    config['proxies'].append({
-        'name': f'server{i}',
-        'type': 'vless',
-        'server': parts[0],
-        'port': int(parts[1].split('?')[0]),
-        'uuid': line.split('@')[0].split('//')[1].split(':')[1].split('-')[0],  # упрощённо
-        'tls': True
-    })
+# Проверка / создание директории output
+if not os.path.exists('output'):
+    os.makedirs('output')
 
-# Сохраняем clash.yaml
-with open('output/clash.yaml', 'w') as f:
-    yaml.dump(config, f, sort_keys=False)
+try:
+    with open('output/clash.yaml', 'w') as f:
+        yaml.dump(config, f, sort_keys=False)
+    print("Файл clash.yaml создан.")
+except Exception as e:
+    print("Ошибка при записи clash.yaml:", e)
+    exit(1)
 
-# Сохраняем shadowrocket.txt
-with open('output/shadowrocket.txt', 'w') as f:
-    for s in filtered:
-        f.write(s + '\n')
+try:
+    with open('output/shadowrocket.txt', 'w') as f:
+        for s in filtered:
+            f.write(s + '\n')
+    print("Файл shadowrocket.txt создан.")
+except Exception as e:
+    print("Ошибка при записи shadowrocket.txt:", e)
+    exit(1)
