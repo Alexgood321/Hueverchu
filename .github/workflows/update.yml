@@ -1,10 +1,9 @@
 name: Update Configs
 
 on:
-  push:
-  workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'  # запуск каждый час
+    - cron: '0 * * * *'  # каждый час
+  workflow_dispatch:     # запуск вручную
 
 jobs:
   update:
@@ -20,8 +19,18 @@ jobs:
         python-version: '3.x'
 
     - name: Install dependencies
-      run: |
-        pip install requests pyyaml
+      run: pip install requests pyyaml
 
     - name: Run script
-      run: python3 update.py
+      run: |
+        python update.py
+        mkdir -p output
+        mv shadowrocket.txt clash.yaml ping_debug.txt output/
+
+    - name: Commit and push results
+      run: |
+        git config --global user.name 'github-actions'
+        git config --global user.email 'github-actions@github.com'
+        git add output/
+        git commit -m "🔄 Автообновление конфигов"
+        git push
