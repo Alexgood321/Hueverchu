@@ -1,9 +1,11 @@
 import requests
-import subprocess
+import socket
+import time
 
 # Настройки
 URL = "https://raw.githubusercontent.com/Alexgood321/proxy-config/main/Server.txt"
-MAX_PING = 300
+MAX_PING = 300  # мс
+TIMEOUT = 2     # секунды
 
 # Получение списка ссылок
 r = requests.get(URL)
@@ -14,41 +16,44 @@ print(f"#DEBUG: загружено строк: {len(lines)}")
 good_nodes = []
 debug_log = ""
 
+def tcp_ping(host: str, port: int = 443, timeout: int = TIMEOUT) -> float:
+    try:
+        start = time.time()
+        with socket.create_connection((host, port), timeout=timeout):
+            end = time.time()
+        return (end - start) * 1000  # ms
+    except Exception:
+        return 9999
+
 for i, line in enumerate(lines):
     if not line.strip():
         continue
-    try:
-        debug_log += f"\nОбработка строки #{i}:\n{line}\n"
-        if "?" in line:
-            address = line.split("?")[0].split("@")[-1]
-        else:
-            address = line.split("//")[1].split("@")[-1].split(":")[0]
-        result = subprocess.run(["ping", "-c", "1", "-W", "1", address], capture_output=True, text=True)
-        if "time=" in result.stdout:
-            ping_ms = float(result.stdout.split("time=")[-1].split()[0])
-        else:
-            ping_ms = 9999
 
-        debug_log += f"Ping = {ping_ms} мс\n"
+    debug_log += f"\nОбработка строки #{i}:\n{line}\n"
+
+    try:
+        address = line.split("@")[-1].split("/")[0].strip()
+        ping_ms = tcp_ping(address)
+        debug_log += f"Ping = {int(ping_ms)} ms\n"
+
         if ping_ms <= MAX_PING:
             good_nodes.append(line)
         else:
             debug_log += "Пропуск: высокий пинг\n"
+
     except Exception as e:
-        debug_log += f"Ошибка: {str(e)}\n"
+        debug_log += f"❌ Ошибка: {str(e)}\n"
         continue
 
 # Shadowrocket
 shadowrocket_text = "\n".join(good_nodes)
 
 # Clash
-clash_text = "proxies:\n"
+clash_text = 'proxies:\n'
 for idx, node in enumerate(good_nodes):
-    clash_text += f"  - name: Proxy{idx + 1}\n    type: vless\n    url: {node}\n"
+    clash_text += f'- name: Proxy{idx + 1}\n  type: vless\n  url: {node}\n'
 
-# Сохраняем файлы
-print("Создаю файлы...")
-
+# Сохранение файлов
 with open("shadowrocket.txt", "w", encoding="utf-8") as f:
     f.write(shadowrocket_text)
 
