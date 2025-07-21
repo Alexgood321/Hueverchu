@@ -9,15 +9,16 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 import json
 
-# URL с прокси
+# Настройки
 PROXY_LIST_URL = "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
-MAX_PING = 300  # Максимальный пинг в мс
+MAX_PING = 150  # Максимальный пинг в мс (можно настроить)
+MAX_PROXY_COUNT = 20  # Желаемое количество прокси (10–20)
 
-# Функция для получения текущего времени
+# Время в формате UTC
 def get_timestamp():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-# Функция для декодирования base64
+# Декодирование base64
 def decode_base64_if_sub(line):
     if line.startswith("sub://"):
         encoded_part = line[6:].strip()
@@ -28,7 +29,7 @@ def decode_base64_if_sub(line):
             return None, f"Failed to decode base64: {line} - {str(e)}"
     return [line], None
 
-# Функция для извлечения хоста и порта
+# Извлечение хоста и порта
 def extract_host_port(line):
     try:
         if line.startswith(("vless://", "trojan://", "ss://", "vmess://")):
@@ -44,17 +45,12 @@ def extract_host_port(line):
             if not port:
                 match = re.search(r":(\d+)", clean_line)
                 port = int(match.group(1)) if match else None
-            if not (host and port):
-                match = re.search(r"host=([^:]+):(\d+)", line)
-                if match:
-                    host, port = match.groups()
-                    port = int(port)
             return host, port, None if host and port else f"Failed to parse host/port: {line}"
     except Exception as e:
         return None, None, f"Failed to parse: {line} - {str(e)}"
     return None, None, f"Invalid format: {line}"
 
-# Функция для проверки TCP-соединения
+# Проверка соединения с повторными попытками
 def check_server(host, port, timeout=5, retries=2):
     for attempt in range(retries + 1):
         try:
@@ -64,18 +60,16 @@ def check_server(host, port, timeout=5, retries=2):
             sock.connect((host, port))
             sock.close()
             latency = (time.time() - start_time) * 1000
-            return True, latency, f"OK: {host}:{port} (Latency: {latency:.2f}ms, Attempt: {attempt + 1}/{retries + 1})"
-        except socket.gaierror:
-            return False, 0, f"Error: {host}:{port} - DNS resolution failed"
+            return True, latency, f"OK: {host}:{port} (Latency: {latency:.2f}ms)"
         except socket.timeout:
             if attempt == retries:
-                return False, 0, f"Error: {host}:{port} - timed out after {retries + 1} attempts"
+                return False, 0, f"Error: {host}:{port} - timed out"
             time.sleep(1)
         except Exception as e:
             return False, 0, f"Error: {host}:{port} - {str(e)}"
     return False, 0, f"Error: {host}:{port} - max retries reached"
 
-# Функция для преобразования прокси в формат ClashX Pro
+# Конвертация в формат ClashX Pro
 def convert_to_clash_format(proxy_line):
     try:
         parsed_url = urlparse(proxy_line)
@@ -84,47 +78,26 @@ def convert_to_clash_format(proxy_line):
         port = parsed_url.port or int(re.search(r":(\d+)", proxy_line).group(1))
 
         if proxy_line.startswith("vless://"):
-            user_info = parsed_url.username
             config = {
                 "name": f"vless-{host}-{port}",
                 "type": "vless",
                 "server": host,
                 "port": port,
-                "uuid": user_info,
-                "network": query_params.get("type", ["tcp"])[0] if "type" in query_params else "tcp",
-                "tls": True if query_params.get("security", ["tls"])[0].lower() == "tls" else False
+                "uuid": parsed_url.username,
+                "network": query_params.get("type", ["tcp"])[0],
+                "tls": "tls" in query_params.get("security", [""])[0].lower()
             }
-            # WebSocket support
-            if config["network"] == "ws":
-                config["ws-opts"] = {
-                    "path": query_params.get("path", [""])[0],
-                    "headers": {"Host": host}
-                }
-            # TLS SNI
-            if "sni" in query_params:
-                config["servername"] = query_params["sni"][0]
             return config
 
         elif proxy_line.startswith("trojan://"):
-            password = parsed_url.username
             config = {
                 "name": f"trojan-{host}-{port}",
                 "type": "trojan",
                 "server": host,
                 "port": port,
-                "password": password,
-                "network": query_params.get("type", ["tcp"])[0] if "type" in query_params else "tcp",
+                "password": parsed_url.username,
                 "tls": True
             }
-            # WebSocket support
-            if config["network"] == "ws":
-                config["ws-opts"] = {
-                    "path": query_params.get("path", [""])[0],
-                    "headers": {"Host": host}
-                }
-            # TLS SNI
-            if "sni" in query_params:
-                config["sni"] = query_params["sni"][0]
             return config
 
         elif proxy_line.startswith("ss://"):
@@ -152,66 +125,60 @@ def convert_to_clash_format(proxy_line):
                 "network": data.get("net", "tcp"),
                 "tls": data.get("tls", "false").lower() == "true"
             }
-            if config["network"] == "ws":
-                config["ws-opts"] = {
-                    "path": data.get("path", ""),
-                    "headers": {"Host": data["add"]}
-                }
-            if "sni" in data:
-                config["servername"] = data["sni"]
             return config
-    except Exception as e:
+    except Exception:
         return None
     return None
 
-# Функция для параллельной проверки
+# Параллельная проверка прокси
 def check_servers_parallel(proxies):
     results = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_proxy = {executor.submit(check_server, host, port): (proxy, host, port) for proxy, host, port in proxies}
         for future in future_to_proxy:
             proxy, host, port = future_to_proxy[future]
-            is_alive, latency, status = future.result()
-            results[proxy] = (is_alive, latency, status)
+            results[proxy] = future.result()
     return results
 
-# Основной процесс
+# Основная логика
 def main():
     debug_log = [f"[{get_timestamp()}] Starting proxy check"]
-    working_servers = set()
+    working_servers = []
     skipped_servers = set()
-    clash_proxies = []
 
-    # Загрузка списка прокси
+    # Загрузка прокси
     try:
         with urllib.request.urlopen(PROXY_LIST_URL, timeout=10) as response:
             proxy_lines = response.read().decode("utf-8").splitlines()
         debug_log.append(f"[{get_timestamp()}] Loaded {len(proxy_lines)} proxy entries")
     except Exception as e:
-        debug_log.append(f"[{get_timestamp()]] Failed to load proxy list: {str(e)}")
+        debug_log.append(f"[{get_timestamp()}] Failed to load proxy list: {str(e)}")
         with open("ping_debug.txt", "w") as f:
             f.write("\n".join(debug_log))
         return
 
-    # Подготовка прокси для проверки
-    proxies_to_check = [(decoded_line, host, port) for decoded_line in sum([decode_base64_if_sub(line)[0] for line in proxy_lines if decode_base64_if_sub(line)[0]], []) for host, port, _ in [extract_host_port(decoded_line)] if host and port]
+    # Подготовка прокси
+    proxies_to_check = [(line, host, port) for line in sum([decode_base64_if_sub(l)[0] for l in proxy_lines if decode_base64_if_sub(l)[0]], []) 
+                        for host, port, _ in [extract_host_port(line)] if host and port]
 
-    # Параллельная проверка
+    # Проверка
     results = check_servers_parallel(proxies_to_check)
-    for proxy, (host, port, _) in proxies_to_check:
+    for proxy, _, _ in proxies_to_check:
         is_alive, latency, status = results[proxy]
         debug_log.append(f"[{get_timestamp()}] {status}")
         if is_alive and latency < MAX_PING:
-            working_servers.add(proxy)
-            clash_proxy = convert_to_clash_format(proxy)
-            if clash_proxy:
-                clash_proxies.append(clash_proxy)
+            working_servers.append((proxy, latency))
         else:
             skipped_servers.add(proxy)
 
-    # Сохранение результатов
+    # Сортировка и отбор лучших
+    working_servers.sort(key=lambda x: x[1])
+    best_proxies = [proxy for proxy, _ in working_servers[:MAX_PROXY_COUNT]]
+
+    # Генерация файлов
+    clash_proxies = [p for p in [convert_to_clash_format(proxy) for proxy in best_proxies] if p]
     with open("Server.txt", "w") as f:
-        f.write("\n".join(sorted(working_servers)))
+        f.write("\n".join(best_proxies))
     with open("skipped.txt", "w") as f:
         f.write("\n".join(sorted(skipped_servers)))
     with open("ping_debug.txt", "w") as f:
@@ -219,7 +186,7 @@ def main():
     with open("clashx_pro.yaml", "w") as f:
         yaml.dump({"proxies": clash_proxies}, f, default_flow_style=False, sort_keys=False)
 
-    debug_log.append(f"[{get_timestamp()}] Completed: {len(working_servers)} working, {len(skipped_servers)} skipped")
+    debug_log.append(f"[{get_timestamp()}] Completed: {len(best_proxies)} working, {len(skipped_servers)} skipped")
 
 if __name__ == "__main__":
     main()
