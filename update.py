@@ -5,7 +5,7 @@ import re
 import base64
 
 # Пути
-INPUT_FILE = "server.txt"
+INPUT_FILE = "Server.txt"
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
