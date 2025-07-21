@@ -1,47 +1,99 @@
 import os
 import subprocess
+import yaml
+import re
+import base64
 
-INPUT_FILE = "input/servers.txt"
+# Пути
+INPUT_FILE = "server.txt"
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def get_ping(ip):
+SHADOWROCKET_FILE = os.path.join(OUTPUT_DIR, "shadowrocket.txt")
+CLASH_FILE = os.path.join(OUTPUT_DIR, "clash.yaml")
+DEBUG_FILE = os.path.join(OUTPUT_DIR, "ping_debug.txt")
+
+# Порог по ping
+MAX_PING = 300
+
+def extract_host(url):
+    """Извлекает host из vless://, trojan://, ss://"""
     try:
-        output = subprocess.check_output(["ping", "-c", "1", "-W", "1", ip], universal_newlines=True)
-        for line in output.split('\n'):
-            if "time=" in line:
-                return float(line.split("time=")[1].split(" ")[0])
-    except:
-        return 9999
-    return 9999
+        if url.startswith(("vless://", "trojan://")):
+            match = re.search(r'@([\w\.-]+):(\d+)', url)
+            return match.group(1) if match else None
 
-def extract_ip(vless_url):
-    try:
-        return vless_url.split('@')[1].split(':')[0]
-    except:
+        elif url.startswith("ss://"):
+            url_clean = url.split("#")[0]
+            raw = url_clean[5:]
+
+            if "@" not in raw:
+                raw += "=" * (-len(raw) % 4)  # padding
+                decoded = base64.b64decode(raw).decode()
+                parts = decoded.split("@")
+            else:
+                parts = raw.split("@")
+
+            if len(parts) == 2:
+                host_port = parts[1]
+                host = host_port.split(":")[0]
+                return host
+    except Exception:
         return None
 
-with open(INPUT_FILE, "r") as file:
-    proxies = [line.strip() for line in file if line.strip()]
+    return None
 
-with open("shadowrocket.txt", "w") as f_srk, open("clash.yaml", "w") as f_clash, open("ping_debug.txt", "w") as f_debug:
-    f_clash.write("proxies:\n")
+def ping(host):
+    """Возвращает ping до host в мс, иначе 9999"""
+    try:
+        out = subprocess.check_output(["ping", "-c", "1", "-W", "1", host], universal_newlines=True)
+        match = re.search(r'time=([\d.]+)', out)
+        return float(match.group(1)) if match else 9999
+    except:
+        return 9999
 
-    for i, link in enumerate(proxies):
-        ip = extract_ip(link)
-        if not ip:
+def main():
+    with open(INPUT_FILE, "r") as f:
+        urls = [line.strip() for line in f if line.strip().startswith(("vless://", "trojan://", "ss://"))]
+
+    valid_urls = []
+    clash_proxies = []
+    debug_log = []
+
+    for i, url in enumerate(urls):
+        proto = url.split("://")[0]
+        host = extract_host(url)
+
+        debug_log.append(f"[{i}] {proto.upper()} | URL: {url}")
+        if not host:
+            debug_log.append("  ⛔ Не удалось извлечь хост\n")
             continue
 
-        ping = get_ping(ip)
-        f_debug.write(f"Обработка строки #{i}:\n{link}\nPing = {ping} ms\n")
+        latency = ping(host)
+        debug_log.append(f"  ✅ Host: {host} | Ping: {latency} ms")
 
-        if ping < 300:
-            f_srk.write(link + "\n")
-            f_clash.write(
-                f"  - name: proxy{i}\n"
-                f"    type: vless\n"
-                f"    server: {ip}\n"
-                f"    port: 443\n"
-                f"    uuid: <your-uuid>\n"
-                f"    tls: true\n"
-            )
+        if latency < MAX_PING:
+            valid_urls.append(url)
+            clash_proxies.append({
+                "name": f"{proto}_{i}",
+                "type": proto,
+                "server": host,
+                "port": 443,
+                "udp": True
+            })
+            debug_log.append("  👍 Добавлен\n")
         else:
-            f_debug.write("Пропуск: высокий пинг\n\n")
+            debug_log.append("  ⚠️ Пропущен — высокий пинг\n")
+
+    # Сохраняем результаты
+    with open(SHADOWROCKET_FILE, "w") as f:
+        f.write("\n".join(valid_urls))
+
+    with open(CLASH_FILE, "w") as f:
+        yaml.dump({"proxies": clash_proxies}, f, allow_unicode=True)
+
+    with open(DEBUG_FILE, "w") as f:
+        f.write("\n".join(debug_log))
+
+if __name__ == "__main__":
+    main()
