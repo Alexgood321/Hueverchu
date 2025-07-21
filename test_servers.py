@@ -164,7 +164,7 @@ def process_proxies(url, debug_log):
     checked = check_all_proxies(proxy_candidates, debug_log)
     checked.sort(key=lambda x: (x[1], -x[2]))  # Сортировка по пингу (восх) и скорости (убыв)
     # Явное ограничение до 20 прокси
-    top_proxies = checked[:MAX_PROXY_COUNT] if len(checked) > MAX_PROXY_COUNT else checked
+    top_proxies = checked[:MAX_PROXY_COUNT] if checked else []
     debug_log.append(f"[{get_timestamp()}] ✅ Selected {len(top_proxies)} top proxies (limited to {MAX_PROXY_COUNT})")
 
     best_lines = [line for line, _, _ in top_proxies]
