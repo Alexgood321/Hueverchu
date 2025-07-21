@@ -33,10 +33,31 @@ def decode_base64_if_sub(line, debug_log):
     return [line]
 
 def extract_host_port(line, debug_log):
+    """Return host and port from a proxy line.
+
+    The previous implementation couldn't handle ``vmess://`` links because the
+    host and port are base64 encoded inside the URL. As a result, such proxies
+    were always skipped. This function now decodes ``vmess`` links before
+    falling back to generic parsing.
+    """
     try:
+        if line.startswith("vmess://"):
+            try:
+                raw = base64.b64decode(line[8:] + "==").decode("utf-8")
+                cfg = json.loads(raw)
+                host = cfg.get("add")
+                port = int(cfg.get("port", 0))
+                return (host, port) if host and port else (None, None)
+            except Exception as e:
+                debug_log.append(
+                    f"[{get_timestamp()}] ❌ Extract vmess error: {line} - {str(e)}"
+                )
+                return None, None
+
         parsed = urlparse(line)
         host = parsed.hostname
         port = parsed.port
+
         if not host or not port:
             match = re.search(r"@([^\s:]+):(\d+)", line)
             if match:
@@ -45,7 +66,12 @@ def extract_host_port(line, debug_log):
             else:
                 query = parse_qs(parsed.query)
                 host = query.get("host", [None])[0]
-                port = int(query.get("port", [None])[0]) if query.get("port", [None])[0] else None
+                port = (
+                    int(query.get("port", [None])[0])
+                    if query.get("port", [None])[0]
+                    else None
+                )
+
         return (host, port) if host and port else (None, None)
     except Exception as e:
         debug_log.append(f"[{get_timestamp()}] ❌ Extract error: {line} - {str(e)}")
