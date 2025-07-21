@@ -9,26 +9,27 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 import json
 import argparse
-import sys
+import os
 
-DEFAULT_URL = "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
 MAX_PING = 150
 MAX_PROXY_COUNT = 20
 
 def get_timestamp():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-def decode_base64_if_sub(line):
+def decode_base64_if_sub(line, debug_log):
     if line.startswith("sub://"):
         encoded = line[6:].strip()
         try:
             decoded = base64.b64decode(encoded + "==").decode("utf-8")
-            return decoded.splitlines(), None
+            debug_log.append(f"[{get_timestamp()}] ✅ Base64 decoded: {len(decoded.splitlines())} lines")
+            return decoded.splitlines()
         except Exception as e:
-            return None, f"[{get_timestamp()}] Decode error: {str(e)}"
-    return [line], None
+            debug_log.append(f"[{get_timestamp()}] ❌ Decode error: {str(e)}")
+            return []
+    return [line]
 
-def extract_host_port(line):
+def extract_host_port(line, debug_log):
     try:
         clean_line = re.split(r"[?#]", line)[0]
         parsed = urlparse(clean_line)
@@ -39,9 +40,10 @@ def extract_host_port(line):
             if match:
                 host, port = match.groups()
                 port = int(port)
-        return host, port, None if host and port else f"Failed host/port: {line}"
+        return (host, port) if host and port else (None, None)
     except Exception as e:
-        return None, None, f"Parse error: {str(e)}"
+        debug_log.append(f"[{get_timestamp()}] ❌ Host/Port extract error: {str(e)}")
+        return None, None
 
 def check_server(host, port, timeout=5, retries=1):
     for attempt in range(retries + 1):
@@ -52,12 +54,12 @@ def check_server(host, port, timeout=5, retries=1):
             sock.connect((host, port))
             sock.close()
             latency = (time.time() - start) * 1000
-            return True, latency, f"{host}:{port} ✅ {latency:.1f}ms"
+            return True, latency
         except:
             time.sleep(1)
-    return False, 0, f"{host}:{port} ❌ timeout"
+    return False, 0
 
-def convert_to_clash_format(line, debug):
+def convert_to_clash_format(line, debug_log):
     try:
         if line.startswith("vmess://"):
             raw = base64.b64decode(line[8:] + "==").decode("utf-8")
@@ -93,95 +95,88 @@ def convert_to_clash_format(line, debug):
                 "network": q.get("type", ["tcp"])[0],
                 "tls": "tls" in q.get("security", [""])[0]
             }
-        elif line.startswith("ss://"):
-            part = line[5:].split("@")[0]
-            decoded = base64.b64decode(part + "==").decode()
-            method, pwd = decoded.split(":")
-            parsed = urlparse(line)
-            return {
-                "name": f"ss-{parsed.hostname}-{parsed.port}",
-                "type": "ss",
-                "server": parsed.hostname,
-                "port": parsed.port,
-                "cipher": method,
-                "password": pwd
-            }
     except Exception as e:
-        debug.append(f"[{get_timestamp()}] Conversion error: {str(e)}")
+        debug_log.append(f"[{get_timestamp()}] ❌ Format conversion error: {str(e)}")
     return None
 
-def check_servers_parallel(proxies):
-    results = {}
-    with ThreadPoolExecutor(max_workers=20) as exec:
-        future_map = {exec.submit(check_server, h, p): (line, h, p) for line, h, p in proxies}
-        for future in future_map:
-            line, host, port = future_map[future]
-            results[line] = future.result()
-    return results
-
-def main(proxy_url):
-    debug = [f"[{get_timestamp()}] Started"]
+def main(url):
+    debug_log = [f"[{get_timestamp()}] 🚀 Starting scan..."]
+    raw_proxies = []
+    decoded = []
     working = []
     skipped = []
+    yaml_proxies = []
 
-    # Load proxy list
+    # Download
     try:
-        with urllib.request.urlopen(proxy_url, timeout=10) as r:
-            lines = r.read().decode().splitlines()
-        debug.append(f"[{get_timestamp()}] Loaded {len(lines)} lines")
+        with urllib.request.urlopen(url, timeout=10) as r:
+            raw_proxies = r.read().decode().splitlines()
+        debug_log.append(f"[{get_timestamp()}] ✅ Downloaded {len(raw_proxies)} entries")
     except Exception as e:
-        debug.append(f"[{get_timestamp()}] Load error: {str(e)}")
-        save_files([], [], [], debug)
-        return
+        debug_log.append(f"[{get_timestamp()}] ❌ Download error: {str(e)}")
+        return save_all([], [], [], debug_log)
 
-    decoded = []
-    for l in lines:
-        res, err = decode_base64_if_sub(l)
-        if res:
-            decoded.extend(res)
-        elif err:
-            debug.append(err)
+    # Decode
+    for line in raw_proxies:
+        decoded.extend(decode_base64_if_sub(line, debug_log))
 
-    proxies = []
+    debug_log.append(f"[{get_timestamp()}] 🔍 Total decoded: {len(decoded)} lines")
+
+    # Extract
+    proxies_to_check = []
     for line in decoded:
-        host, port, err = extract_host_port(line)
+        host, port = extract_host_port(line, debug_log)
         if host and port:
-            proxies.append((line, host, port))
-        elif err:
-            debug.append(err)
-
-    results = check_servers_parallel(proxies)
-    for line, (alive, ping, status) in results.items():
-        debug.append(f"[{get_timestamp()}] {status}")
-        if alive and ping < MAX_PING:
-            working.append((line, ping))
+            proxies_to_check.append((line, host, port))
         else:
             skipped.append(line)
+            debug_log.append(f"[{get_timestamp()}] ⚠️ Skipped line (bad format): {line[:60]}...")
 
+    # Check
+    for line, host, port in proxies_to_check:
+        alive, latency = check_server(host, port)
+        if alive and latency < MAX_PING:
+            working.append((line, latency))
+            debug_log.append(f"[{get_timestamp()}] ✅ Alive {host}:{port} - {latency:.1f}ms")
+        else:
+            skipped.append(line)
+            debug_log.append(f"[{get_timestamp()}] ❌ Dead {host}:{port}")
+
+    # Sort
     working.sort(key=lambda x: x[1])
-    top = [x[0] for x in working[:MAX_PROXY_COUNT]]
-    configs = [convert_to_clash_format(p, debug) for p in top]
-    configs = [c for c in configs if c]
+    best = [line for line, _ in working[:MAX_PROXY_COUNT]]
 
-    debug.append(f"[{get_timestamp()}] Finished — {len(top)} saved, {len(skipped)} skipped")
-    save_files(top, skipped, configs, debug)
+    # Convert
+    for proxy_line in best:
+        conf = convert_to_clash_format(proxy_line, debug_log)
+        if conf:
+            yaml_proxies.append(conf)
 
-def save_files(ok, skip, yaml_cfg, log):
+    # Final log
+    debug_log.append(f"[{get_timestamp()}] ✅ Working: {len(working)} / {len(proxies_to_check)}")
+    debug_log.append(f"[{get_timestamp()}] ✅ Converted to YAML: {len(yaml_proxies)}")
+    debug_log.append(f"[{get_timestamp()}] 💾 Writing files...")
+
+    # Save everything
+    save_all(best, skipped, yaml_proxies, debug_log)
+
+def save_all(ok_list, skip_list, yaml_cfg, debug_log):
     with open("Server.txt", "w") as f:
-        f.write("\n".join(ok))
+        f.write("\n".join(ok_list) if ok_list else "")
     with open("skipped.txt", "w") as f:
-        f.write("\n".join(skip))
+        f.write("\n".join(skip_list) if skip_list else "")
     with open("ping_debug.txt", "w") as f:
-        f.write("\n".join(log))
+        f.write("\n".join(debug_log))
     with open("clashx_pro.yaml", "w") as f:
         yaml.dump({"proxies": yaml_cfg}, f, sort_keys=False)
 
-    print(f"🟢 OK: {len(ok)} proxies saved")
-    print(f"🟡 Skipped: {len(skip)}")
+    print("🔁 Готово!")
+    print(f"✅ Working: {len(ok_list)}")
+    print(f"⚠️ Skipped: {len(skip_list)}")
     print(f"📄 Files: Server.txt, skipped.txt, ping_debug.txt, clashx_pro.yaml")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Proxy checker & converter to ClashX Pro")
-    parser.add_argument("--url", default=DEFAULT_URL, help="URL to subscription list")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--url", help="Subscription URL", default="https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt")
     args = parser.parse_args()
     main(args.url)
