@@ -1,99 +1,97 @@
 import os
+import socket
 import subprocess
-import yaml
-import re
-import base64
+import time
 
-# Пути
 INPUT_FILE = "Server.txt"
-OUTPUT_DIR = "output"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+SHADOWROCKET_OUTPUT = "output/shadowrocket.txt"
+CLASH_OUTPUT = "output/clash.yaml"
+PING_LOG = "output/ping_debug.txt"
+SKIPPED_LOG = "output/skipped.txt"
 
-SHADOWROCKET_FILE = os.path.join(OUTPUT_DIR, "shadowrocket.txt")
-CLASH_FILE = os.path.join(OUTPUT_DIR, "clash.yaml")
-DEBUG_FILE = os.path.join(OUTPUT_DIR, "ping_debug.txt")
+os.makedirs("output", exist_ok=True)
 
-# Порог по ping
-MAX_PING = 300
-
-def extract_host(url):
-    """Извлекает host из vless://, trojan://, ss://"""
+def extract_host_from_url(url):
     try:
-        if url.startswith(("vless://", "trojan://")):
-            match = re.search(r'@([\w\.-]+):(\d+)', url)
-            return match.group(1) if match else None
-
-        elif url.startswith("ss://"):
-            url_clean = url.split("#")[0]
-            raw = url_clean[5:]
-
-            if "@" not in raw:
-                raw += "=" * (-len(raw) % 4)  # padding
-                decoded = base64.b64decode(raw).decode()
-                parts = decoded.split("@")
-            else:
-                parts = raw.split("@")
-
-            if len(parts) == 2:
-                host_port = parts[1]
-                host = host_port.split(":")[0]
-                return host
-    except Exception:
+        if "@" in url:
+            after_at = url.split("@")[1]
+            return after_at.split(":")[0]
+        elif "//" in url:
+            main_part = url.split("//")[1]
+            return main_part.split(":")[0].split("@")[-1]
+    except Exception as e:
         return None
-
     return None
 
-def ping(host):
-    """Возвращает ping до host в мс, иначе 9999"""
+def ping_host(host):
     try:
-        out = subprocess.check_output(["ping", "-c", "1", "-W", "1", host], universal_newlines=True)
-        match = re.search(r'time=([\d.]+)', out)
-        return float(match.group(1)) if match else 9999
-    except:
-        return 9999
+        ip = socket.gethostbyname(host)
+    except Exception:
+        return None
+    try:
+        output = subprocess.check_output(
+            ["ping", "-c", "1", "-W", "1", host],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True
+        )
+        for line in output.splitlines():
+            if "time=" in line:
+                return float(line.split("time=")[1].split(" ")[0])
+    except subprocess.CalledProcessError:
+        return None
+    return None
 
-def main():
-    with open(INPUT_FILE, "r") as f:
-        urls = [line.strip() for line in f if line.strip().startswith(("vless://", "trojan://", "ss://"))]
+with open(INPUT_FILE, "r") as f:
+    urls = [line.strip() for line in f if line.strip()]
 
-    valid_urls = []
-    clash_proxies = []
-    debug_log = []
+good_urls = []
+ping_results = []
+skipped_urls = []
 
-    for i, url in enumerate(urls):
-        proto = url.split("://")[0]
-        host = extract_host(url)
+for idx, url in enumerate(urls):
+    host = extract_host_from_url(url)
+    if not host:
+        skipped_urls.append((url, "❌ Не удалось извлечь host"))
+        continue
 
-        debug_log.append(f"[{i}] {proto.upper()} | URL: {url}")
-        if not host:
-            debug_log.append("  ⛔ Не удалось извлечь хост\n")
-            continue
+    ping = ping_host(host)
+    proto = "UNKNOWN"
+    if url.startswith("vless://"):
+        proto = "VLESS"
+    elif url.startswith("trojan://"):
+        proto = "TROJAN"
+    elif url.startswith("ss://"):
+        proto = "SS"
 
-        latency = ping(host)
-        debug_log.append(f"  ✅ Host: {host} | Ping: {latency} ms")
+    if ping is None:
+        ping_results.append(f"[{idx+1}] {proto} | URL: {url}\n  ❌ Не удалось узнать хост\n")
+        skipped_urls.append((url, "❌ Не удалось узнать хост"))
+        continue
+    elif ping > 300:
+        ping_results.append(f"[{idx+1}] {proto} | URL: {url}\n  ⚠️ Плохой ping: {ping:.0f} ms\n")
+    else:
+        ping_results.append(f"[{idx+1}] {proto} | URL: {url}\n  ✅ Пинг: {ping:.0f} ms\n")
 
-        if latency < MAX_PING:
-            valid_urls.append(url)
-            clash_proxies.append({
-                "name": f"{proto}_{i}",
-                "type": proto,
-                "server": host,
-                "port": 443,
-                "udp": True
-            })
-            debug_log.append("  👍 Добавлен\n")
-        else:
-            debug_log.append("  ⚠️ Пропущен — высокий пинг\n")
+    good_urls.append((url, proto))
 
-    # Сохраняем результаты
-    with open(SHADOWROCKET_FILE, "w") as f:
-        f.write("\n".join(valid_urls))
+# Запись Shadowrocket
+with open(SHADOWROCKET_OUTPUT, "w") as f:
+    for url, proto in good_urls:
+        if proto in ["VLESS", "TROJAN", "SS"]:
+            f.write(url + "\n")
 
-    with open(CLASH_FILE, "w") as f:
-        yaml.dump({"proxies": clash_proxies}, f, allow_unicode=True)
+# Запись Clash
+with open(CLASH_OUTPUT, "w") as f:
+    f.write("proxies:\n")
+    # сюда можно вставить парсинг позже
 
-    with open(DEBUG_FILE, "w") as f:
-        f.write("\n".join(debug_log))
+# Запись отладочного пинга
+with open(PING_LOG, "w") as f:
+    f.writelines(ping_results)
 
-if __name__ == "__main__":
-    main()
+# Запись отброшенных
+with open(SKIPPED_LOG, "w") as f:
+    for line, reason in skipped_urls:
+        f.write(f"{reason} => {line}\n")
+
+print("✅ Завершено. Прокси сохранены.")
