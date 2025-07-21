@@ -70,7 +70,7 @@ def check_server(host, port, timeout=5, retries=2):
     return False, 0, f"Error: {host}:{port} - max retries reached"
 
 # Конвертация в формат ClashX Pro
-def convert_to_clash_format(proxy_line):
+def convert_to_clash_format(proxy_line, debug_log):
     try:
         parsed_url = urlparse(proxy_line)
         query_params = parse_qs(parsed_url.query)
@@ -87,6 +87,7 @@ def convert_to_clash_format(proxy_line):
                 "network": query_params.get("type", ["tcp"])[0],
                 "tls": "tls" in query_params.get("security", [""])[0].lower()
             }
+            debug_log.append(f"[{get_timestamp()}] Converted vless: {proxy_line}")
             return config
 
         elif proxy_line.startswith("trojan://"):
@@ -98,13 +99,14 @@ def convert_to_clash_format(proxy_line):
                 "password": parsed_url.username,
                 "tls": True
             }
+            debug_log.append(f"[{get_timestamp()}] Converted trojan: {proxy_line}")
             return config
 
         elif proxy_line.startswith("ss://"):
             base64_part = proxy_line[5:].split("@")[0]
             decoded = base64.b64decode(base64_part).decode("utf-8")
             method, password = decoded.split(":")
-            return {
+            config = {
                 "name": f"ss-{host}-{port}",
                 "type": "ss",
                 "server": host,
@@ -112,6 +114,8 @@ def convert_to_clash_format(proxy_line):
                 "cipher": method,
                 "password": password
             }
+            debug_log.append(f"[{get_timestamp()}] Converted ss: {proxy_line}")
+            return config
 
         elif proxy_line.startswith("vmess://"):
             decoded = base64.b64decode(proxy_line[8:]).decode("utf-8")
@@ -125,9 +129,12 @@ def convert_to_clash_format(proxy_line):
                 "network": data.get("net", "tcp"),
                 "tls": data.get("tls", "false").lower() == "true"
             }
+            debug_log.append(f"[{get_timestamp()}] Converted vmess: {proxy_line}")
             return config
-    except Exception:
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] Conversion failed for {proxy_line}: {str(e)}")
         return None
+    debug_log.append(f"[{get_timestamp()}] Unsupported format: {proxy_line}")
     return None
 
 # Параллельная проверка прокси
@@ -171,16 +178,24 @@ def main():
         else:
             skipped_servers.add(proxy)
 
-    # Сортировка и отбор лучших
+    # Сортировка и явное ограничение количества
     if working_servers:
         working_servers.sort(key=lambda x: x[1])  # Сортировка по пингу
-        best_proxies = [proxy for proxy, _ in working_servers[:MAX_PROXY_COUNT]]
+        best_proxies = [proxy for proxy, _ in working_servers[:min(MAX_PROXY_COUNT, len(working_servers))]]
+        debug_log.append(f"[{get_timestamp()}] Selected {len(best_proxies)} best proxies (limited to {MAX_PROXY_COUNT})")
     else:
         best_proxies = []
+        debug_log.append(f"[{get_timestamp()}] No proxies found with ping < {MAX_PING}ms")
+
+    # Конвертация в формат ClashX Pro
+    clash_proxies = []
+    for proxy in best_proxies:
+        config = convert_to_clash_format(proxy, debug_log)
+        if config:
+            clash_proxies.append(config)
 
     # Генерация файлов
-    clash_proxies = [p for p in [convert_to_clash_format(proxy) for proxy in best_proxies] if p]
-    with open("Server.txt", "w") as f:  # Явная перезапись файла
+    with open("Server.txt", "w") as f:
         f.write("\n".join(best_proxies) if best_proxies else "")
     with open("skipped.txt", "w") as f:
         f.write("\n".join(sorted(skipped_servers)))
@@ -189,7 +204,7 @@ def main():
     with open("clashx_pro.yaml", "w") as f:
         yaml.dump({"proxies": clash_proxies}, f, default_flow_style=False, sort_keys=False)
 
-    debug_log.append(f"[{get_timestamp()}] Completed: {len(best_proxies)} working, {len(skipped_servers)} skipped")
+    debug_log.append(f"[{get_timestamp()}] Completed: {len(best_proxies)} working, {len(skipped_servers)} skipped, {len(clash_proxies)} converted to YAML")
 
 if __name__ == "__main__":
     main()
