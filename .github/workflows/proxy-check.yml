@@ -1,0 +1,42 @@
+name: Proxy Check
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Позволяет запускать вручную
+
+jobs:
+  check-proxies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x' # Используйте нужную версию Python
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pyyaml  # Добавьте зависимости, если нужны
+
+      - name: Run proxy check script
+        run: python test_servers.py --output proxy_list.txt  # Укажите нужное имя файла
+        env:
+          HTTP_PROXY: ${{ secrets.HTTP_PROXY }}  # Опционально, для прокси
+          HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }} # Опционально, для прокси
+          NO_PROXY: localhost,127.0.0.1  # Исключения прокси
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()  # Загружает артефакты даже при ошибке
+        with:
+          name: proxy-results
+          path: |
+            proxy_list.txt  # Обновите имя файла
+            skipped.txt
+            ping_debug.txt
+            clashx_pro.yaml
