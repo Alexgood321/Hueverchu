@@ -8,11 +8,10 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        with:
-          persist-credentials: true  # Важно для пуша
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,13 +24,15 @@ jobs:
       - name: Run script
         run: |
           python update.py
-          mkdir -p output
-          mv shadowrocket.txt clash.yaml ping_debug.txt output/
+          mkdir -p output/
+          mv output/*.txt output/ || echo "No .txt files found"
+          mv output/*.yaml output/ || echo "No .yaml files found"
 
       - name: Commit and push results
         run: |
           git config --global user.name 'github-actions'
           git config --global user.email 'github-actions@github.com'
           git add output/
-          git commit -m "🔄 Автообновление конфигов" || echo "No changes to commit"
+          git commit -m "🔁 Автообновление конфигов" || echo "No changes to commit"
+          git pull --rebase origin main || echo "Nothing to rebase"
           git push
