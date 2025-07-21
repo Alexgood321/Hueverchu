@@ -1,38 +1,36 @@
-name: Update Configs
+name: Update Proxy List
 
 on:
   schedule:
-    - cron: '0 * * * *'  # каждый час
-  workflow_dispatch:     # запуск вручную
+    - cron: "0 * * * *"  # Каждый час
+  workflow_dispatch:      # Возможность ручного запуска
 
 jobs:
   update:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.x"
 
       - name: Install dependencies
-        run: pip install requests pyyaml
-
-      - name: Run script
         run: |
-          python update.py
-          mkdir -p output/
-          mv output/*.txt output/ || echo "No .txt files found"
-          mv output/*.yaml output/ || echo "No .yaml files found"
+          python -m pip install --upgrade pip
 
-      - name: Commit and push results
+      - name: Run proxy filter script
+        run: python test_servers.py
+
+      - name: Commit and push changes
         run: |
-          git config --global user.name 'github-actions'
-          git config --global user.email 'github-actions@github.com'
-          git add output/
-          git commit -m "🔁 Автообновление конфигов" || echo "No changes to commit"
-          git pull --rebase origin main || echo "Nothing to rebase"
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add Server.txt skipped.txt ping_debug.txt
+          git commit -m "Update proxy lists $(date)"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
