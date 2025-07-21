@@ -141,6 +141,10 @@ def check_all_proxies(proxies, debug_log):
                 debug_log.append(f"[{get_timestamp()}] ✅ {host}:{port} - {latency:.1f}ms - {speed:.1f} KB/s")
             else:
                 debug_log.append(f"[{get_timestamp()}] ❌ {host}:{port} - {latency:.1f}ms or timeout")
+    # Предварительное ограничение до 50, чтобы не перегружать память
+    if len(results) > 50:
+        results = results[:50]
+        debug_log.append(f"[{get_timestamp()}] ⚠️ Limited initial results to 50 due to large dataset")
     return results
 
 def process_proxies(url, debug_log):
