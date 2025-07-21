@@ -11,8 +11,8 @@ import json
 
 # Настройки
 PROXY_LIST_URL = "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
-MAX_PING = 150  # Максимальный пинг в мс (можно настроить)
-MAX_PROXY_COUNT = 20  # Желаемое количество прокси (10–20)
+MAX_PING = 150  # Максимальный пинг в мс
+MAX_PROXY_COUNT = 20  # Желаемое количество прокси
 
 # Время в формате UTC
 def get_timestamp():
@@ -172,13 +172,16 @@ def main():
             skipped_servers.add(proxy)
 
     # Сортировка и отбор лучших
-    working_servers.sort(key=lambda x: x[1])
-    best_proxies = [proxy for proxy, _ in working_servers[:MAX_PROXY_COUNT]]
+    if working_servers:
+        working_servers.sort(key=lambda x: x[1])  # Сортировка по пингу
+        best_proxies = [proxy for proxy, _ in working_servers[:MAX_PROXY_COUNT]]
+    else:
+        best_proxies = []
 
     # Генерация файлов
     clash_proxies = [p for p in [convert_to_clash_format(proxy) for proxy in best_proxies] if p]
-    with open("Server.txt", "w") as f:
-        f.write("\n".join(best_proxies))
+    with open("Server.txt", "w") as f:  # Явная перезапись файла
+        f.write("\n".join(best_proxies) if best_proxies else "")
     with open("skipped.txt", "w") as f:
         f.write("\n".join(sorted(skipped_servers)))
     with open("ping_debug.txt", "w") as f:
