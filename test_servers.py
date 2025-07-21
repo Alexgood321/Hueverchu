@@ -120,7 +120,7 @@ def convert_to_clash_format(line, debug_log):
             }
             if result["network"] == "ws":
                 result["ws-opts"] = {"path": query.get("path", ["/"])[0]}
-            debug_log.append(f"[{get_timestamp()]} ✅ Converted vless: {line}")
+            debug_log.append(f"[{get_timestamp()}] ✅ Converted vless: {line}")
             return result
     except Exception as e:
         debug_log.append(f"[{get_timestamp()}] ❌ Conversion error: {line} - {str(e)}")
@@ -163,12 +163,13 @@ def process_proxies(url, debug_log):
 
     checked = check_all_proxies(proxy_candidates, debug_log)
     checked.sort(key=lambda x: (x[1], -x[2]))  # Сортировка по пингу (восх) и скорости (убыв)
-    top_proxies = checked[:MAX_PROXY_COUNT]  # Ограничение до 20
+    # Явное ограничение до 20 прокси
+    top_proxies = checked[:MAX_PROXY_COUNT] if len(checked) > MAX_PROXY_COUNT else checked
+    debug_log.append(f"[{get_timestamp()}] ✅ Selected {len(top_proxies)} top proxies (limited to {MAX_PROXY_COUNT})")
 
     best_lines = [line for line, _, _ in top_proxies]
     converted = [config for line in best_lines if (config := convert_to_clash_format(line, debug_log))]
 
-    debug_log.append(f"[{get_timestamp()}] ✅ Selected {len(top_proxies)} top proxies")
     return best_lines, skipped, converted
 
 def save_results(ok_list, skip_list, yaml_cfg, debug_log):
