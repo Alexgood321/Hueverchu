@@ -185,15 +185,15 @@ def process_proxies(url, debug_log):
 
     return best_lines, skipped, converted
 
-def save_results(ok_list, skip_list, yaml_cfg, debug_log):
-    debug_log.append(f"[{get_timestamp()}] 💾 Saving files: Server.txt, skipped.txt, ping_debug.txt, clashx_pro.yaml")
+def save_results(ok_list, skip_list, yaml_cfg, debug_log, output_file="Server.txt"):
+    debug_log.append(f"[{get_timestamp()}] 💾 Saving files: {output_file}, skipped.txt, ping_debug.txt, clashx_pro.yaml")
     try:
-        with open("Server.txt", "w") as f:
+        with open(output_file, "w") as f:
             content = "\n".join(ok_list) if ok_list else "No working proxies found"
             f.write(content)
-            debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(ok_list)} proxies to Server.txt")
+            debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(ok_list)} proxies to {output_file}")
     except Exception as e:
-        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save Server.txt: {str(e)}")
+        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save {output_file}: {str(e)}")
     try:
         with open("skipped.txt", "w") as f:
             content = "\n".join(skip_list) if skip_list else "No skipped proxies"
@@ -217,20 +217,21 @@ def save_results(ok_list, skip_list, yaml_cfg, debug_log):
     print(f"\n📦 Done:")
     print(f"✅ Working: {len(ok_list)}")
     print(f"⚠️ Skipped: {len(skip_list)}")
-    print(f"📄 Files: Server.txt, skipped.txt, ping_debug.txt, clashx_pro.yaml")
+    print(f"📄 Files: {output_file}, skipped.txt, ping_debug.txt, clashx_pro.yaml")
 
-def main(url):
+def main(url, output_file="Server.txt"):
     debug_log = [f"[{get_timestamp()}] 🚀 Starting proxy scan"]
     try:
         best_lines, skipped, converted = process_proxies(url, debug_log)
-        save_results(best_lines, skipped, converted, debug_log)
+        save_results(best_lines, skipped, converted, debug_log, output_file)
     except Exception as e:
         debug_log.append(f"[{get_timestamp()}] ❌ Critical error: {str(e)}")
         print(f"Error: {str(e)}", file=sys.stderr)
-        save_results([], [], [], debug_log)  # Попытка сохранить лог при ошибке
+        save_results([], [], [], debug_log, output_file)  # Попытка сохранить лог при ошибке
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scan and filter proxies for ClashX Pro")
     parser.add_argument("--url", default="https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt", help="URL of proxy list")
+    parser.add_argument("--output", default="Server.txt", help="Output file name for proxy list")
     args = parser.parse_args()
-    main(args.url)
+    main(args.url, args.output)
