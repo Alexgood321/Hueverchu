@@ -8,203 +8,180 @@ from datetime import datetime
 import yaml
 from concurrent.futures import ThreadPoolExecutor
 import json
+import argparse
+import sys
 
-# Настройки
-PROXY_LIST_URL = "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
-MAX_PING = 150  # Максимальный пинг в мс
-MAX_PROXY_COUNT = 20  # Желаемое количество прокси
+DEFAULT_URL = "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
+MAX_PING = 150
+MAX_PROXY_COUNT = 20
 
-# Время в формате UTC
 def get_timestamp():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-# Декодирование base64
 def decode_base64_if_sub(line):
     if line.startswith("sub://"):
-        encoded_part = line[6:].strip()
+        encoded = line[6:].strip()
         try:
-            decoded = base64.b64decode(encoded_part).decode("utf-8")
+            decoded = base64.b64decode(encoded + "==").decode("utf-8")
             return decoded.splitlines(), None
         except Exception as e:
-            return None, f"Failed to decode base64: {line} - {str(e)}"
+            return None, f"[{get_timestamp()}] Decode error: {str(e)}"
     return [line], None
 
-# Извлечение хоста и порта
 def extract_host_port(line):
     try:
-        if line.startswith(("vless://", "trojan://", "ss://", "vmess://")):
-            clean_line = re.split(r"[?#]", line)[0]
-            parsed = urlparse(clean_line)
-            host = parsed.hostname
-            port = parsed.port
-            if not host:
-                match = re.search(r"@([^\s:]+):(\d+)", clean_line)
-                if match:
-                    host, port = match.groups()
-                    port = int(port)
-            if not port:
-                match = re.search(r":(\d+)", clean_line)
-                port = int(match.group(1)) if match else None
-            return host, port, None if host and port else f"Failed to parse host/port: {line}"
+        clean_line = re.split(r"[?#]", line)[0]
+        parsed = urlparse(clean_line)
+        host = parsed.hostname
+        port = parsed.port
+        if not host or not port:
+            match = re.search(r"@([^\s:]+):(\d+)", clean_line)
+            if match:
+                host, port = match.groups()
+                port = int(port)
+        return host, port, None if host and port else f"Failed host/port: {line}"
     except Exception as e:
-        return None, None, f"Failed to parse: {line} - {str(e)}"
-    return None, None, f"Invalid format: {line}"
+        return None, None, f"Parse error: {str(e)}"
 
-# Проверка соединения с повторными попытками
-def check_server(host, port, timeout=5, retries=2):
+def check_server(host, port, timeout=5, retries=1):
     for attempt in range(retries + 1):
         try:
-            start_time = time.time()
+            start = time.time()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect((host, port))
             sock.close()
-            latency = (time.time() - start_time) * 1000
-            return True, latency, f"OK: {host}:{port} (Latency: {latency:.2f}ms)"
-        except socket.timeout:
-            if attempt == retries:
-                return False, 0, f"Error: {host}:{port} - timed out"
+            latency = (time.time() - start) * 1000
+            return True, latency, f"{host}:{port} ✅ {latency:.1f}ms"
+        except:
             time.sleep(1)
-        except Exception as e:
-            return False, 0, f"Error: {host}:{port} - {str(e)}"
-    return False, 0, f"Error: {host}:{port} - max retries reached"
+    return False, 0, f"{host}:{port} ❌ timeout"
 
-# Конвертация в формат ClashX Pro
-def convert_to_clash_format(proxy_line, debug_log):
+def convert_to_clash_format(line, debug):
     try:
-        parsed_url = urlparse(proxy_line)
-        query_params = parse_qs(parsed_url.query)
-        host = parsed_url.hostname or re.search(r"@([^:]+)", proxy_line).group(1)
-        port = parsed_url.port or int(re.search(r":(\d+)", proxy_line).group(1))
-
-        if proxy_line.startswith("vless://"):
-            config = {
-                "name": f"vless-{host}-{port}",
-                "type": "vless",
-                "server": host,
-                "port": port,
-                "uuid": parsed_url.username,
-                "network": query_params.get("type", ["tcp"])[0],
-                "tls": "tls" in query_params.get("security", [""])[0].lower()
+        if line.startswith("vmess://"):
+            raw = base64.b64decode(line[8:] + "==").decode("utf-8")
+            j = json.loads(raw)
+            return {
+                "name": f"vmess-{j['add']}-{j['port']}",
+                "type": "vmess",
+                "server": j["add"],
+                "port": int(j["port"]),
+                "uuid": j["id"],
+                "network": j.get("net", "tcp"),
+                "tls": j.get("tls", "false") == "true"
             }
-            debug_log.append(f"[{get_timestamp()}] Converted vless: {proxy_line}")
-            return config
-
-        elif proxy_line.startswith("trojan://"):
-            config = {
-                "name": f"trojan-{host}-{port}",
+        elif line.startswith("trojan://"):
+            parsed = urlparse(line)
+            return {
+                "name": f"trojan-{parsed.hostname}-{parsed.port}",
                 "type": "trojan",
-                "server": host,
-                "port": port,
-                "password": parsed_url.username,
+                "server": parsed.hostname,
+                "port": parsed.port,
+                "password": parsed.username,
                 "tls": True
             }
-            debug_log.append(f"[{get_timestamp()}] Converted trojan: {proxy_line}")
-            return config
-
-        elif proxy_line.startswith("ss://"):
-            base64_part = proxy_line[5:].split("@")[0]
-            decoded = base64.b64decode(base64_part).decode("utf-8")
-            method, password = decoded.split(":")
-            config = {
-                "name": f"ss-{host}-{port}",
+        elif line.startswith("vless://"):
+            parsed = urlparse(line)
+            q = parse_qs(parsed.query)
+            return {
+                "name": f"vless-{parsed.hostname}-{parsed.port}",
+                "type": "vless",
+                "server": parsed.hostname,
+                "port": parsed.port,
+                "uuid": parsed.username,
+                "network": q.get("type", ["tcp"])[0],
+                "tls": "tls" in q.get("security", [""])[0]
+            }
+        elif line.startswith("ss://"):
+            part = line[5:].split("@")[0]
+            decoded = base64.b64decode(part + "==").decode()
+            method, pwd = decoded.split(":")
+            parsed = urlparse(line)
+            return {
+                "name": f"ss-{parsed.hostname}-{parsed.port}",
                 "type": "ss",
-                "server": host,
-                "port": int(port),
+                "server": parsed.hostname,
+                "port": parsed.port,
                 "cipher": method,
-                "password": password
+                "password": pwd
             }
-            debug_log.append(f"[{get_timestamp()}] Converted ss: {proxy_line}")
-            return config
-
-        elif proxy_line.startswith("vmess://"):
-            decoded = base64.b64decode(proxy_line[8:]).decode("utf-8")
-            data = json.loads(decoded)
-            config = {
-                "name": f"vmess-{data['add']}-{data['port']}",
-                "type": "vmess",
-                "server": data["add"],
-                "port": int(data["port"]),
-                "uuid": data["id"],
-                "network": data.get("net", "tcp"),
-                "tls": data.get("tls", "false").lower() == "true"
-            }
-            debug_log.append(f"[{get_timestamp()}] Converted vmess: {proxy_line}")
-            return config
     except Exception as e:
-        debug_log.append(f"[{get_timestamp()}] Conversion failed for {proxy_line}: {str(e)}")
-        return None
-    debug_log.append(f"[{get_timestamp()}] Unsupported format: {proxy_line}")
+        debug.append(f"[{get_timestamp()}] Conversion error: {str(e)}")
     return None
 
-# Параллельная проверка прокси
 def check_servers_parallel(proxies):
     results = {}
-    with ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_proxy = {executor.submit(check_server, host, port): (proxy, host, port) for proxy, host, port in proxies}
-        for future in future_to_proxy:
-            proxy, host, port = future_to_proxy[future]
-            results[proxy] = future.result()
+    with ThreadPoolExecutor(max_workers=20) as exec:
+        future_map = {exec.submit(check_server, h, p): (line, h, p) for line, h, p in proxies}
+        for future in future_map:
+            line, host, port = future_map[future]
+            results[line] = future.result()
     return results
 
-# Основная логика
-def main():
-    debug_log = [f"[{get_timestamp()}] Starting proxy check"]
-    working_servers = []
-    skipped_servers = set()
+def main(proxy_url):
+    debug = [f"[{get_timestamp()}] Started"]
+    working = []
+    skipped = []
 
-    # Загрузка прокси
+    # Load proxy list
     try:
-        with urllib.request.urlopen(PROXY_LIST_URL, timeout=10) as response:
-            proxy_lines = response.read().decode("utf-8").splitlines()
-        debug_log.append(f"[{get_timestamp()}] Loaded {len(proxy_lines)} proxy entries")
+        with urllib.request.urlopen(proxy_url, timeout=10) as r:
+            lines = r.read().decode().splitlines()
+        debug.append(f"[{get_timestamp()}] Loaded {len(lines)} lines")
     except Exception as e:
-        debug_log.append(f"[{get_timestamp()}] Failed to load proxy list: {str(e)}")
-        with open("ping_debug.txt", "w") as f:
-            f.write("\n".join(debug_log))
+        debug.append(f"[{get_timestamp()}] Load error: {str(e)}")
+        save_files([], [], [], debug)
         return
 
-    # Подготовка прокси
-    proxies_to_check = [(line, host, port) for line in sum([decode_base64_if_sub(l)[0] for l in proxy_lines if decode_base64_if_sub(l)[0]], []) 
-                        for host, port, _ in [extract_host_port(line)] if host and port]
+    decoded = []
+    for l in lines:
+        res, err = decode_base64_if_sub(l)
+        if res:
+            decoded.extend(res)
+        elif err:
+            debug.append(err)
 
-    # Проверка
-    results = check_servers_parallel(proxies_to_check)
-    for proxy, _, _ in proxies_to_check:
-        is_alive, latency, status = results[proxy]
-        debug_log.append(f"[{get_timestamp()}] {status}")
-        if is_alive and latency < MAX_PING:
-            working_servers.append((proxy, latency))
+    proxies = []
+    for line in decoded:
+        host, port, err = extract_host_port(line)
+        if host and port:
+            proxies.append((line, host, port))
+        elif err:
+            debug.append(err)
+
+    results = check_servers_parallel(proxies)
+    for line, (alive, ping, status) in results.items():
+        debug.append(f"[{get_timestamp()}] {status}")
+        if alive and ping < MAX_PING:
+            working.append((line, ping))
         else:
-            skipped_servers.add(proxy)
+            skipped.append(line)
 
-    # Сортировка и явное ограничение количества
-    if working_servers:
-        working_servers.sort(key=lambda x: x[1])  # Сортировка по пингу
-        best_proxies = [proxy for proxy, _ in working_servers[:min(MAX_PROXY_COUNT, len(working_servers))]]
-        debug_log.append(f"[{get_timestamp()}] Selected {len(best_proxies)} best proxies (limited to {MAX_PROXY_COUNT})")
-    else:
-        best_proxies = []
-        debug_log.append(f"[{get_timestamp()}] No proxies found with ping < {MAX_PING}ms")
+    working.sort(key=lambda x: x[1])
+    top = [x[0] for x in working[:MAX_PROXY_COUNT]]
+    configs = [convert_to_clash_format(p, debug) for p in top]
+    configs = [c for c in configs if c]
 
-    # Конвертация в формат ClashX Pro
-    clash_proxies = []
-    for proxy in best_proxies:
-        config = convert_to_clash_format(proxy, debug_log)
-        if config:
-            clash_proxies.append(config)
+    debug.append(f"[{get_timestamp()}] Finished — {len(top)} saved, {len(skipped)} skipped")
+    save_files(top, skipped, configs, debug)
 
-    # Генерация файлов
+def save_files(ok, skip, yaml_cfg, log):
     with open("Server.txt", "w") as f:
-        f.write("\n".join(best_proxies) if best_proxies else "")
+        f.write("\n".join(ok))
     with open("skipped.txt", "w") as f:
-        f.write("\n".join(sorted(skipped_servers)))
+        f.write("\n".join(skip))
     with open("ping_debug.txt", "w") as f:
-        f.write("\n".join(debug_log))
+        f.write("\n".join(log))
     with open("clashx_pro.yaml", "w") as f:
-        yaml.dump({"proxies": clash_proxies}, f, default_flow_style=False, sort_keys=False)
+        yaml.dump({"proxies": yaml_cfg}, f, sort_keys=False)
 
-    debug_log.append(f"[{get_timestamp()}] Completed: {len(best_proxies)} working, {len(skipped_servers)} skipped, {len(clash_proxies)} converted to YAML")
+    print(f"🟢 OK: {len(ok)} proxies saved")
+    print(f"🟡 Skipped: {len(skip)}")
+    print(f"📄 Files: Server.txt, skipped.txt, ping_debug.txt, clashx_pro.yaml")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Proxy checker & converter to ClashX Pro")
+    parser.add_argument("--url", default=DEFAULT_URL, help="URL to subscription list")
+    args = parser.parse_args()
+    main(args.url)
