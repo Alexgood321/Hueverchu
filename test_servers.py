@@ -128,20 +128,27 @@ def convert_to_clash_format(line, debug_log):
 
 def check_all_proxies(proxies, debug_log):
     results = []
+    seen = set()  # Для удаления дубликатов
     with ThreadPoolExecutor(max_workers=20) as executor:
         future_map = {
             executor.submit(check_speed, host, port): (line, host, port)
             for line, host, port in proxies if host and port
         }
+        total_checked = 0
         for future in future_map:
             line, host, port = future_map[future]
             alive, latency, speed = future.result()
+            total_checked += 1
             if alive and latency < MAX_PING_MS:
-                results.append((line, latency, speed))
-                debug_log.append(f"[{get_timestamp()}] ✅ {host}:{port} - {latency:.1f}ms - {speed:.1f} KB/s")
+                # Удаление дубликатов по хосту и порту
+                key = f"{host}:{port}"
+                if key not in seen:
+                    seen.add(key)
+                    results.append((line, latency, speed))
+                    debug_log.append(f"[{get_timestamp()}] ✅ {host}:{port} - {latency:.1f}ms - {speed:.1f} KB/s")
             else:
                 debug_log.append(f"[{get_timestamp()}] ❌ {host}:{port} - {latency:.1f}ms or timeout")
-    # Предварительное ограничение до 50, чтобы не перегружать память
+        debug_log.append(f"[{get_timestamp()}] 📊 Total checked: {total_checked}, Filtered: {len(results)}")
     if len(results) > 50:
         results = results[:50]
         debug_log.append(f"[{get_timestamp()}] ⚠️ Limited initial results to 50 due to large dataset")
@@ -169,6 +176,8 @@ def process_proxies(url, debug_log):
     checked.sort(key=lambda x: (x[1], -x[2]))  # Сортировка по пингу (восх) и скорости (убыв)
     # Явное ограничение до 20 прокси
     top_proxies = checked[:MAX_PROXY_COUNT] if checked else []
+    if len(checked) > MAX_PROXY_COUNT:
+        debug_log.append(f"[{get_timestamp()}] ⚠️ Trimmed {len(checked) - MAX_PROXY_COUNT} proxies to limit {MAX_PROXY_COUNT}")
     debug_log.append(f"[{get_timestamp()}] ✅ Selected {len(top_proxies)} top proxies (limited to {MAX_PROXY_COUNT})")
 
     best_lines = [line for line, _, _ in top_proxies]
