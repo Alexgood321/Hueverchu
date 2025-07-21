@@ -9,6 +9,7 @@ import yaml
 from concurrent.futures import ThreadPoolExecutor
 import json
 import argparse
+import sys
 
 # Настройки
 MAX_PROXY_COUNT = 20      # Количество прокси
@@ -63,8 +64,9 @@ def check_speed(host, port, timeout=CHECK_TIMEOUT, retries=RETRIES):
             latency_ms = (start_dl - start) * 1000
             speed_kbps = (len(data) / 1024) / (time.time() - start_dl + 1e-6)
             return True, latency_ms, speed_kbps
-        except Exception:
+        except Exception as e:
             if attempt == retries:
+                debug_log.append(f"[{get_timestamp()}] ❌ Check speed failed for {host}:{port} - {str(e)}")
                 return False, 0, 0
             time.sleep(1)
     return False, 0, 0
@@ -128,7 +130,7 @@ def convert_to_clash_format(line, debug_log):
 
 def check_all_proxies(proxies, debug_log):
     results = []
-    seen = set()  # Для удаления дубликатов
+    seen = set()
     with ThreadPoolExecutor(max_workers=20) as executor:
         future_map = {
             executor.submit(check_speed, host, port): (line, host, port)
@@ -140,7 +142,6 @@ def check_all_proxies(proxies, debug_log):
             alive, latency, speed = future.result()
             total_checked += 1
             if alive and latency < MAX_PING_MS:
-                # Удаление дубликатов по хосту и порту
                 key = f"{host}:{port}"
                 if key not in seen:
                     seen.add(key)
@@ -173,8 +174,7 @@ def process_proxies(url, debug_log):
     debug_log.append(f"[{get_timestamp()}] 🕒 Checking {len(proxy_candidates)} candidates")
 
     checked = check_all_proxies(proxy_candidates, debug_log)
-    checked.sort(key=lambda x: (x[1], -x[2]))  # Сортировка по пингу (восх) и скорости (убыв)
-    # Явное ограничение до 20 прокси
+    checked.sort(key=lambda x: (x[1], -x[2]))
     top_proxies = checked[:MAX_PROXY_COUNT] if checked else []
     if len(checked) > MAX_PROXY_COUNT:
         debug_log.append(f"[{get_timestamp()}] ⚠️ Trimmed {len(checked) - MAX_PROXY_COUNT} proxies to limit {MAX_PROXY_COUNT}")
@@ -187,21 +187,33 @@ def process_proxies(url, debug_log):
 
 def save_results(ok_list, skip_list, yaml_cfg, debug_log):
     debug_log.append(f"[{get_timestamp()}] 💾 Saving files: Server.txt, skipped.txt, ping_debug.txt, clashx_pro.yaml")
-    with open("Server.txt", "w") as f:
-        content = "\n".join(ok_list) if ok_list else "No working proxies found"
-        f.write(content)
-        debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(ok_list)} proxies to Server.txt")
-    with open("skipped.txt", "w") as f:
-        content = "\n".join(skip_list) if skip_list else "No skipped proxies"
-        f.write(content)
-        debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(skip_list)} skipped to skipped.txt")
-    with open("ping_debug.txt", "w") as f:
-        f.write("\n".join(debug_log))
-        debug_log.append(f"[{get_timestamp()}] 📝 Saved debug log")
-    with open("clashx_pro.yaml", "w") as f:
-        content = {"proxies": yaml_cfg} if yaml_cfg else {"proxies": [], "note": "No proxies converted"}
-        yaml.dump(content, f, sort_keys=False)
-        debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(yaml_cfg)} proxies to clashx_pro.yaml")
+    try:
+        with open("Server.txt", "w") as f:
+            content = "\n".join(ok_list) if ok_list else "No working proxies found"
+            f.write(content)
+            debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(ok_list)} proxies to Server.txt")
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save Server.txt: {str(e)}")
+    try:
+        with open("skipped.txt", "w") as f:
+            content = "\n".join(skip_list) if skip_list else "No skipped proxies"
+            f.write(content)
+            debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(skip_list)} skipped to skipped.txt")
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save skipped.txt: {str(e)}")
+    try:
+        with open("ping_debug.txt", "w") as f:
+            f.write("\n".join(debug_log))
+            debug_log.append(f"[{get_timestamp()}] 📝 Saved debug log")
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save ping_debug.txt: {str(e)}")
+    try:
+        with open("clashx_pro.yaml", "w") as f:
+            content = {"proxies": yaml_cfg} if yaml_cfg else {"proxies": [], "note": "No proxies converted"}
+            yaml.dump(content, f, sort_keys=False)
+            debug_log.append(f"[{get_timestamp()}] 📝 Saved {len(yaml_cfg)} proxies to clashx_pro.yaml")
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] ❌ Failed to save clashx_pro.yaml: {str(e)}")
     print(f"\n📦 Done:")
     print(f"✅ Working: {len(ok_list)}")
     print(f"⚠️ Skipped: {len(skip_list)}")
@@ -209,8 +221,13 @@ def save_results(ok_list, skip_list, yaml_cfg, debug_log):
 
 def main(url):
     debug_log = [f"[{get_timestamp()}] 🚀 Starting proxy scan"]
-    best_lines, skipped, converted = process_proxies(url, debug_log)
-    save_results(best_lines, skipped, converted, debug_log)
+    try:
+        best_lines, skipped, converted = process_proxies(url, debug_log)
+        save_results(best_lines, skipped, converted, debug_log)
+    except Exception as e:
+        debug_log.append(f"[{get_timestamp()}] ❌ Critical error: {str(e)}")
+        print(f"Error: {str(e)}", file=sys.stderr)
+        save_results([], [], [], debug_log)  # Попытка сохранить лог при ошибке
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scan and filter proxies for ClashX Pro")
