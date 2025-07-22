@@ -25,12 +25,9 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyyaml        # используется для clashx_pro.yaml
+        pip install pyyaml        # нужна для clashx_pro.yaml
 
     - name: Run proxy filter
-      env:
-        HTTP_PROXY:  ${{ secrets.HTTP_PROXY  || '' }}
-        HTTPS_PROXY: ${{ secrets.HTTPS_PROXY || '' }}
       run: python test_servers.py --output output/Server.txt
 
     - name: Commit & push result
@@ -44,7 +41,7 @@ jobs:
           output/clashx_pro.yaml
 
     - name: Upload artifacts
-      if: always()         # даже если шаги выше упали
+      if: always()               # даже если предыдущие шаги упали
       uses: actions/upload-artifact@v4
       with:
         name: proxy-results
