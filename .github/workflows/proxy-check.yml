@@ -24,7 +24,7 @@ jobs:
           pip install requests pyyaml  # Добавьте зависимости, если нужны
 
       - name: Run proxy check script
-        run: python test_servers.py --output proxy_list.txt  # Укажите нужное имя файла
+        run: python test_servers.py Server.txt  # Укажите нужное имя файла
         env:
           HTTP_PROXY: ${{ secrets.HTTP_PROXY }}  # Опционально, для прокси
           HTTPS_PROXY: ${{ secrets.HTTPS_PROXY }} # Опционально, для прокси
@@ -36,7 +36,8 @@ jobs:
         with:
           name: proxy-results
           path: |
-            proxy_list.txt  # Обновите имя файла
+          
+            Server.txt  # Обновите имя файла
             skipped.txt
             ping_debug.txt
             clashx_pro.yaml
