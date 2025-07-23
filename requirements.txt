@@ -1,1 +1,2 @@
-aiohttp>=3.9.4
+aiohttp>=3.9
+async_timeout>=4
