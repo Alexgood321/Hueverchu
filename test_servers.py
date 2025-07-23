@@ -54,18 +54,20 @@ def looks_like_relay(link: str) -> bool:
     return False
 
 def probe(link: str) -> float | None:
-    """Возвращаем avg_delay (мс) или None."""
+    """Возвращает avg_delay (мс) или None."""
     if looks_like_relay(link):
         return None
+
     with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
         tmp.write(link + "\n"); tmp.flush()
         try:
+            # новый синтаксис: probe <url>, без --url
             res = subprocess.run(
-                ["sing-box", "probe", "--url", f"file://{tmp.name}", "--count", "2"],
+                ["sing-box", "probe", f"file://{tmp.name}", "--count", "2"],
                 capture_output=True, text=True, timeout=PROBE_TIMEOUT
             )
             data = json.loads(res.stdout or "{}")
-            return data.get("avg_delay")
+            return data.get("avg_delay")            # None, если поле отсутствует
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             return None
         finally:
@@ -89,7 +91,11 @@ def main() -> None:
         if d is not None:
             scored.append((d, lk))
 
-    best = [lk for _, lk in sorted(scored, key=lambda x: x[0])[:MAX_LINKS]]
+    if not scored:
+        print("⚠️  Ни один узел не прошёл probe — файл Server.txt не обновлён")
+        return  # exit 0, чтобы workflow не падал
+
+    best = [lk for _, lk in sorted(scored)[:MAX_LINKS]]
     Path(args.output).write_text("\n".join(best) + "\n", encoding="utf-8")
 
     print(textwrap.dedent(f"""
