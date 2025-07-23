@@ -1,141 +1,181 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Фильтруем super-sub:
-  • берём только публичные узлы (vless/vmess/ss/trojan)
-  • 3 TCP-пинга, средний RTT ≤ 400 мс
-  • не relay
-  • не более одного узла на страну
-Результаты:  output/Server.txt, latency.csv, debug.log
+Собирает подписки из:
+  • зашитого списка SOURCES;
+  • файла sources.txt (одна ссылка на строку, # — комментарии);
+  • аргументов командной строки (дополнительно).
+
+Фильтрует URI:
+  • схема vmess / vless / trojan / ss / ssr / hysteria / hysteria2;
+  • PORT ∉ BLOCKED_PORTS  (по умолчанию 8880);
+  • тестирует TCP-ping, оставляет TOP_N самых быстрых.
+
+Результат → output/Server.txt, полный лог → output/debug.log
 """
 
 from __future__ import annotations
-import argparse, base64, csv, ipaddress, json, os, re, socket, sys, time
+import asyncio, base64, re, socket, sys, time
 from pathlib import Path
-from urllib import request, parse
+from urllib.parse import urlparse
 
-SRC = ("https://raw.githubusercontent.com/"
-       "MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt")
+import aiohttp
 
-OUT = Path("output"); OUT.mkdir(parents=True, exist_ok=True)
-TXT, CSV = OUT / "Server.txt", OUT / "latency.csv"
-DBG = OUT / "debug.log"
+# ——— настройки ——————————————————————————————————————————— #
+TOP_N          = 20          # сколько лучших сохранить
+CONCURRENCY    = 400         # одновременных ping'ов
+BLOCKED_PORTS  = {8880}      # здесь можно добавить другие порты
+HTTP_TIMEOUT   = aiohttp.ClientTimeout(total=30)
 
-MAX_LINKS   = 20          # сколько оставить
-MAX_RTT     = 400         # мс
-TRIES       = 3
-SOCK_TO     = 3           # тайм-аут одного connect, c
-TOTAL_TO    = 240         # общий лимит на работу скрипта, c
+SOURCES: list[str] = [
+    # «умолчания» — можно убрать или оставить:
+    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/README.md",
+]
 
-IS_PROTO = re.compile(r"^(vless|vmess|trojan|ss)://", re.I)
-IS_RELAY = re.compile(r"relay", re.I)
-B64_OK   = re.compile(r"^[A-Za-z0-9+/]+={0,2}$").fullmatch
+# ——— рабочие файлы/директории ———————————————————————— #
+ROOT        = Path(__file__).resolve().parent
+OUTPUT_DIR  = ROOT / "output"; OUTPUT_DIR.mkdir(exist_ok=True)
+SERVER_FILE = OUTPUT_DIR / "Server.txt"
+DEBUG_FILE  = OUTPUT_DIR / "debug.log"
 
-dbg = DBG.open('w', encoding='utf-8', buffering=1)
-def log(*a): print(*a, file=dbg, flush=True)
+URI_RX  = re.compile(rb'\b([a-zA-Z][\w.+-]+://[^\s"\'<>]+)')
+SCHEMES = {"vmess", "vless", "trojan", "ss", "ssr", "hysteria", "hysteria2"}
 
-# ───────────────────────── ─────────────────────────
-def b64d(s: str) -> str:
-    try:   return base64.b64decode(s + '===').decode()
-    except Exception: return ''
 
-def fetch() -> list[str]:
-    raw = request.urlopen(SRC, timeout=30).read().decode(errors='ignore')
-    if raw.count('\n') < 2 and B64_OK(raw.strip()):   # base64-подписка
-        raw = b64d(raw.strip())
-    links = [l.strip() for l in raw.splitlines() if IS_PROTO.match(l)]
-    log(f"получено строк: {len(links)}")
-    return links
+# ——— вспомогательные функции —————————————————————————— #
+def debug(msg: str) -> None:
+    line = f"{time.strftime('%H:%M:%S')}  {msg}"
+    print(line, flush=True)
+    DEBUG_FILE.write_text(DEBUG_FILE.read_text() + line + "\n" if DEBUG_FILE.exists() else line + "\n")
 
-def host_port(link: str) -> tuple[str, int] | None:
-    if link.startswith('vmess://'):
+
+def is_b64(txt: str) -> bool:
+    txt = txt.strip()
+    return len(txt) % 4 == 0 and re.fullmatch(r'[A-Za-z0-9+/=]+', txt) is not None
+
+
+def decode_subscription(data: str) -> list[str]:
+    if is_b64(data):
         try:
-            j = json.loads(b64d(link[8:]))
-            return j['add'], int(j['port'])
-        except Exception: return None
-    u = parse.urlsplit(link)
-    return u.hostname, u.port or 0
+            data = base64.b64decode(data + '===').decode(errors='ignore')
+        except Exception:
+            return []
+    return [l.strip() for l in data.splitlines()
+            if l.strip() and l.split('://',1)[0].lower() in SCHEMES]
 
-def is_private(host: str) -> bool:
+
+async def fetch_text(session: aiohttp.ClientSession, url: str) -> str:
+    async with session.get(url) as r:
+        r.raise_for_status()
+        return await r.text()
+
+
+async def download_all(urls: list[str]) -> str:
+    async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as s:
+        tasks = [fetch_text(s, u) for u in urls]
+        texts = await asyncio.gather(*tasks, return_exceptions=True)
+
+    blob = ""
+    for u, t in zip(urls, texts):
+        if isinstance(t, Exception):
+            debug(f"⚠️  {u} — {t}")
+        else:
+            debug(f"✔ {u} — {len(t):,} симв.")
+            blob += t + "\n"
+    return blob
+
+
+def extract_uris(blob: str | bytes) -> list[str]:
+    if isinstance(blob, str):
+        blob = blob.encode()
+    seen, uris = set(), []
+    for m in URI_RX.finditer(blob):
+        uri = m.group(1).decode(errors='ignore')
+        scheme = uri.split('://',1)[0].lower()
+        if scheme in SCHEMES and uri not in seen:
+            seen.add(uri); uris.append(uri)
+    return uris
+
+
+def host_port(uri: str) -> tuple[str,int] | None:
     try:
-        ip = socket.gethostbyname(host)
-        return ipaddress.ip_address(ip).is_private
-    except Exception:
-        return True
-
-def relay(link: str) -> bool:
-    if IS_RELAY.search(link.split('#',1)[0]): return True
-    if link.startswith('vmess://'):
-        try:  return IS_RELAY.search(json.loads(b64d(link[8:])).get('ps','') ) is not None
-        except Exception: pass
-    return False
-
-# ────── простой TCP-ping ──────
-def tcp_ping(host: str, port: int) -> float | None:
-    try:
-        t0 = time.perf_counter()
-        with socket.create_connection((host, port), timeout=SOCK_TO):
-            return (time.perf_counter() - t0) * 1000
+        p = urlparse(uri)
+        port = p.port or (443 if p.scheme in {'vless','trojan','hysteria','hysteria2'} else 80)
+        return p.hostname, port
     except Exception:
         return None
 
-def probe(link: str) -> float | None:
-    if relay(link):             return None
-    hp = host_port(link)
-    if not hp or is_private(hp[0]):   return None
 
-    rtts = []
-    for _ in range(TRIES):
-        r = tcp_ping(*hp)
-        if r is not None: rtts.append(r)
-    if len(rtts) < 2:           return None          # требуется ≥2 успешных
-    rtt = sum(rtts) / len(rtts)
-    if rtt > MAX_RTT:           return None
-    return rtt
-
-# ────── гео по IP (ipapi.co) с кэшом ──────
-_geo: dict[str,str] = {}
-def cc(host: str) -> str:
+async def tcp_ping(host: str, port: int, timeout: float = 3.0) -> float | None:
+    t0 = time.perf_counter()
     try:
-        ip = socket.gethostbyname(host)
-        if ip in _geo: return _geo[ip]
-        code = request.urlopen(f"https://ipapi.co/{ip}/country/", timeout=6).read().decode().strip()
-        _geo[ip] = code if len(code)==2 else '__'
-        return _geo[ip]
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+        writer.close(); await writer.wait_closed()
+        return (time.perf_counter() - t0) * 1000
     except Exception:
-        return '__'
+        return None
 
-# ────── main ──────
-def main() -> None:
-    links = fetch()
-    scored, t0 = [], time.time()
 
-    for ln in links:
-        if time.time() - t0 > TOTAL_TO:   break
-        rtt = probe(ln)
-        log(f"{rtt or '∞':>6} ms  {ln[:80]}")
+async def score(uri: str, sem: asyncio.Semaphore) -> tuple[str,float|None]:
+    hp = host_port(uri);  None if hp else None
+    if not hp: return uri, None
+    host, port = hp
+    if port in BLOCKED_PORTS:
+        return uri, None
+    async with sem:
+        rtt = await tcp_ping(host, port)
+    return uri, rtt
+
+
+async def ping_all(uris: list[str]) -> list[tuple[str,float]]:
+    sem = asyncio.Semaphore(CONCURRENCY)
+    coros = [score(u, sem) for u in uris]
+    results = []
+    for f in asyncio.as_completed(coros):
+        uri, rtt = await f
         if rtt is not None:
-            scored.append((rtt, ln))
+            results.append((uri, rtt))
+            debug(f"{rtt:5.0f} мс  {uri[:90]}")
+    return sorted(results, key=lambda x: x[1])
 
-    scored.sort()
+
+def save(best: list[str]) -> None:
+    SERVER_FILE.write_text("\n".join(best)+'\n', encoding='utf-8')
+    debug(f"💾 сохранено {len(best)} URI → {SERVER_FILE}")
+
+
+# ——— главная функция ———————————————————————————————— #
+def main(extra: list[str]) -> None:
+    # дополняем SOURCES содержимым sources.txt
+    txt = Path("sources.txt")
+    if txt.exists():
+        extra_urls = [l.strip() for l in txt.read_text().splitlines()
+                      if l.strip() and not l.lstrip().startswith('#')]
+        SOURCES.extend(extra_urls)
+        debug(f"📄 sources.txt — добавлено {len(extra_urls)} ссылок")
+
+    SOURCES.extend(extra)
+
+    if not SOURCES:
+        sys.exit("❌ нет источников подписок")
+
+    blob = asyncio.run(download_all(SOURCES))
+    uris = extract_uris(blob)
+    debug(f"Всего URI: {len(uris)}")
+
+    scored = asyncio.run(ping_all(uris))
     if not scored:
-        print("⚠️ 0 пригодных"); return
+        sys.exit("❌ пригодных 0")
 
-    csv.writer(CSV.open('w', newline='')).writerows([("rtt_ms","link"), *scored])
+    best = [u for u, _ in scored[:TOP_N]]
+    save(best)
 
-    best, used_cc, used_ep = [], set(), set()
-    for rtt, ln in scored:
-        host, port = host_port(ln)
-        if (host, port) in used_ep: continue
-        c = cc(host)
-        if c not in used_cc:
-            best.append(ln)
-            used_cc.add(c)
-            used_ep.add((host, port))
-        if len(best) == MAX_LINKS: break
+    debug(f"✔ готово: {len(best)} лучших ссылок, min ping {scored[0][1]:.0f} мс")
 
-    TXT.write_text('\n'.join(best) + '\n', encoding='utf-8')
-    print(f"✔ сохранено: {len(best)}  |  страны: {', '.join(sorted(used_cc - {'__'}) or ['—'])}")
 
+# ——— точка входа ————————————————————————————————————————— #
 if __name__ == "__main__":
-    main()
+    try:
+        main(sys.argv[1:])       # аргументы = дополнительные URL/файлы
+    except KeyboardInterrupt:
+        debug("Прервано пользователем")
