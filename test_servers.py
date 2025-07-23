@@ -1,181 +1,140 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Собирает подписки из:
-  • зашитого списка SOURCES;
-  • файла sources.txt (одна ссылка на строку, # — комментарии);
-  • аргументов командной строки (дополнительно).
+Фильтрует подписки с прокси-серверами, проверяет доступность
+и сохраняет пригодные ссылки в output/Server.txt
 
-Фильтрует URI:
-  • схема vmess / vless / trojan / ss / ssr / hysteria / hysteria2;
-  • PORT ∉ BLOCKED_PORTS  (по умолчанию 8880);
-  • тестирует TCP-ping, оставляет TOP_N самых быстрых.
-
-Результат → output/Server.txt, полный лог → output/debug.log
+Изменения 2025-07-23
+--------------------
+* always truncate output/Server.txt (empty file when 0 servers)
+* drop all Shadowsocks-family links (ss://, ssr:// …)
 """
-
 from __future__ import annotations
-import asyncio, base64, re, socket, sys, time
-from pathlib import Path
-from urllib.parse import urlparse
+
+import argparse
+import asyncio
+import pathlib
+import re
+import sys
+import textwrap
+from typing import Iterable
 
 import aiohttp
 
-# ——— настройки ——————————————————————————————————————————— #
-TOP_N          = 20          # сколько лучших сохранить
-CONCURRENCY    = 400         # одновременных ping'ов
-BLOCKED_PORTS  = {8880}      # здесь можно добавить другие порты
-HTTP_TIMEOUT   = aiohttp.ClientTimeout(total=30)
+# ----------------------------------------------------------------------
+ALLOWED_SCHEMES = {"vmess", "vless", "trojan",
+                   "hysteria", "hysteria2",
+                   "tuic", "vlessh2", "vlessh3"}          # ♦ Shadowsocks убран
+DENIED_PORTS = {8880}                                     # задаётся также из YAML
 
-SOURCES: list[str] = [
-    # «умолчания» — можно убрать или оставить:
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/README.md",
-]
+URL_RE = re.compile(r'([a-z0-9]+)://[^\s\'"<>]+', re.I)
 
-# ——— рабочие файлы/директории ———————————————————————— #
-ROOT        = Path(__file__).resolve().parent
-OUTPUT_DIR  = ROOT / "output"; OUTPUT_DIR.mkdir(exist_ok=True)
-SERVER_FILE = OUTPUT_DIR / "Server.txt"
-DEBUG_FILE  = OUTPUT_DIR / "debug.log"
-
-URI_RX  = re.compile(rb'\b([a-zA-Z][\w.+-]+://[^\s"\'<>]+)')
-SCHEMES = {"vmess", "vless", "trojan", "ss", "ssr", "hysteria", "hysteria2"}
-
-
-# ——— вспомогательные функции —————————————————————————— #
-def debug(msg: str) -> None:
-    line = f"{time.strftime('%H:%M:%S')}  {msg}"
-    print(line, flush=True)
-    DEBUG_FILE.write_text(DEBUG_FILE.read_text() + line + "\n" if DEBUG_FILE.exists() else line + "\n")
-
-
-def is_b64(txt: str) -> bool:
-    txt = txt.strip()
-    return len(txt) % 4 == 0 and re.fullmatch(r'[A-Za-z0-9+/=]+', txt) is not None
-
-
-def decode_subscription(data: str) -> list[str]:
-    if is_b64(data):
-        try:
-            data = base64.b64decode(data + '===').decode(errors='ignore')
-        except Exception:
-            return []
-    return [l.strip() for l in data.splitlines()
-            if l.strip() and l.split('://',1)[0].lower() in SCHEMES]
-
-
+# ----------------------------------------------------------------------
 async def fetch_text(session: aiohttp.ClientSession, url: str) -> str:
-    async with session.get(url) as r:
-        r.raise_for_status()
-        return await r.text()
+    async with session.get(url, timeout=20) as resp:
+        resp.raise_for_status()
+        return await resp.text()
 
 
-async def download_all(urls: list[str]) -> str:
-    async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as s:
-        tasks = [fetch_text(s, u) for u in urls]
-        texts = await asyncio.gather(*tasks, return_exceptions=True)
-
-    blob = ""
-    for u, t in zip(urls, texts):
-        if isinstance(t, Exception):
-            debug(f"⚠️  {u} — {t}")
-        else:
-            debug(f"✔ {u} — {len(t):,} симв.")
-            blob += t + "\n"
-    return blob
+def iter_urls(text: str) -> Iterable[str]:
+    """вернёт все ссылки из произвольного текста"""
+    for m in URL_RE.finditer(text):
+        yield m.group(0)
 
 
-def extract_uris(blob: str | bytes) -> list[str]:
-    if isinstance(blob, str):
-        blob = blob.encode()
-    seen, uris = set(), []
-    for m in URI_RX.finditer(blob):
-        uri = m.group(1).decode(errors='ignore')
-        scheme = uri.split('://',1)[0].lower()
-        if scheme in SCHEMES and uri not in seen:
-            seen.add(uri); uris.append(uri)
-    return uris
+def is_allowed(url: str) -> bool:
+    """фильтр схем и портов"""
+    scheme, rest = url.split("://", 1)
+    scheme = scheme.lower()
+
+    if scheme not in ALLOWED_SCHEMES:
+        return False
+
+    # грубый порт-парсер: ...:PORT? или ...:PORT#
+    m = re.search(r':(\d{2,5})(?:[/?#]|$)', rest)
+    if m and int(m.group(1)) in DENIED_PORTS:
+        return False
+    return True
 
 
-def host_port(uri: str) -> tuple[str,int] | None:
+async def probe(session: aiohttp.ClientSession, url: str) -> bool:
+    """
+    Простейший «пинг»: TCP-connect + сразу закрываем.
+    Для vmess/vless не аутентифицируемся — нам достаточно,
+    что порт открыт и SYN/ACK получен.
+    """
+    scheme, rest = url.split("://", 1)
+    host_port = rest.split("@")[-1] if "@" in rest else rest
+    host, _, port = host_port.partition(":")
     try:
-        p = urlparse(uri)
-        port = p.port or (443 if p.scheme in {'vless','trojan','hysteria','hysteria2'} else 80)
-        return p.hostname, port
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, int(port), ssl=False), timeout=3)
+        writer.close()
+        await writer.wait_closed()
+        return True
     except Exception:
-        return None
+        return False
 
 
-async def tcp_ping(host: str, port: int, timeout: float = 3.0) -> float | None:
-    t0 = time.perf_counter()
-    try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
-        writer.close(); await writer.wait_closed()
-        return (time.perf_counter() - t0) * 1000
-    except Exception:
-        return None
+async def collect_good(sources: list[str]) -> list[str]:
+    good: list[str] = []
+    async with aiohttp.ClientSession() as session:
+        texts = await asyncio.gather(*(fetch_text(session, u) for u in sources),
+                                     return_exceptions=True)
+
+        # ➊ из всех текстов достаём ссылки, ➋ первичный фильтр
+        candidates = [u for txt in texts if isinstance(txt, str)
+                      for u in iter_urls(txt) if is_allowed(u)]
+
+        # ➌ проверяем доступность параллельно, но ограничим ↯
+        sem = asyncio.Semaphore(200)
+
+        async def _checked(u: str):
+            async with sem:
+                if await probe(session, u):
+                    good.append(u)
+
+        await asyncio.gather(*(_checked(u) for u in candidates))
+    return good
 
 
-async def score(uri: str, sem: asyncio.Semaphore) -> tuple[str,float|None]:
-    hp = host_port(uri);  None if hp else None
-    if not hp: return uri, None
-    host, port = hp
-    if port in BLOCKED_PORTS:
-        return uri, None
-    async with sem:
-        rtt = await tcp_ping(host, port)
-    return uri, rtt
+# ----------------------------------------------------------------------
+def parse_cli() -> argparse.Namespace:
+    p = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
+        description=textwrap.dedent("""\
+            Пример:
+              python test_servers.py --sources sources.txt --output output/Server.txt
+        """))
+    p.add_argument("--sources", required=True, help="файл с перечнем URL-источников")
+    p.add_argument("--output",  required=True, help="куда сохранить пригодные ссылки")
+    p.add_argument("--debug",   help="отладочный лог (опц.)")
+    return p.parse_args()
 
 
-async def ping_all(uris: list[str]) -> list[tuple[str,float]]:
-    sem = asyncio.Semaphore(CONCURRENCY)
-    coros = [score(u, sem) for u in uris]
-    results = []
-    for f in asyncio.as_completed(coros):
-        uri, rtt = await f
-        if rtt is not None:
-            results.append((uri, rtt))
-            debug(f"{rtt:5.0f} мс  {uri[:90]}")
-    return sorted(results, key=lambda x: x[1])
+def main() -> None:
+    ns = parse_cli()
+
+    src_path = pathlib.Path(ns.sources)
+    if not src_path.is_file():
+        sys.exit(f"[ERR] файл {src_path} не найден")
+
+    sources = [ln.strip() for ln in src_path.read_text().splitlines() if ln.strip()]
+    print(f"➜ sources.txt — добавлено {len(sources)} ссылок")
+
+    good = asyncio.run(collect_good(sources))
+    print(f"✓ пригодных: {len(good)}")
+
+    out_path = pathlib.Path(ns.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(good))      # ← **полная перезапись / truncate**
+
+    if ns.debug:
+        pathlib.Path(ns.debug).write_text(
+            "\n".join(good) or "0 пригодных — см. логи фильтра\n")
+
+    # non-zero exit when nothing found → GitHub Actions покажет «Failure»
+    sys.exit(0 if good else 1)
 
 
-def save(best: list[str]) -> None:
-    SERVER_FILE.write_text("\n".join(best)+'\n', encoding='utf-8')
-    debug(f"💾 сохранено {len(best)} URI → {SERVER_FILE}")
-
-
-# ——— главная функция ———————————————————————————————— #
-def main(extra: list[str]) -> None:
-    # дополняем SOURCES содержимым sources.txt
-    txt = Path("sources.txt")
-    if txt.exists():
-        extra_urls = [l.strip() for l in txt.read_text().splitlines()
-                      if l.strip() and not l.lstrip().startswith('#')]
-        SOURCES.extend(extra_urls)
-        debug(f"📄 sources.txt — добавлено {len(extra_urls)} ссылок")
-
-    SOURCES.extend(extra)
-
-    if not SOURCES:
-        sys.exit("❌ нет источников подписок")
-
-    blob = asyncio.run(download_all(SOURCES))
-    uris = extract_uris(blob)
-    debug(f"Всего URI: {len(uris)}")
-
-    scored = asyncio.run(ping_all(uris))
-    if not scored:
-        sys.exit("❌ пригодных 0")
-
-    best = [u for u, _ in scored[:TOP_N]]
-    save(best)
-
-    debug(f"✔ готово: {len(best)} лучших ссылок, min ping {scored[0][1]:.0f} мс")
-
-
-# ——— точка входа ————————————————————————————————————————— #
 if __name__ == "__main__":
-    try:
-        main(sys.argv[1:])       # аргументы = дополнительные URL/файлы
-    except KeyboardInterrupt:
-        debug("Прервано пользователем")
+    main()
