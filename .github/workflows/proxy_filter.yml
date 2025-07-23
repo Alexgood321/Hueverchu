@@ -1,66 +1,55 @@
 name: Proxy Filter
 
-# ──────────────── триггеры ────────────────
 on:
   schedule:
-    - cron:  '0 * * * *'      # каждый час
-  push:
-    branches: [ main ]
+    - cron:  '0 * * * *'
+  push: { branches: [ main ] }
   workflow_dispatch:
 
-# если запускается новый job, предыдущий отменяется
 concurrency:
   group: proxy-filter
   cancel-in-progress: true
 
-# ──────────────── job ────────────────
 jobs:
   filter:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # нужно, чтобы пушить изменения
+      contents: write
 
     steps:
-    # 1. Забираем репозиторий
-    - name: Checkout repo
+    - name: Checkout
       uses: actions/checkout@v4
 
-    # 2. Ставим Python
     - name: Set up Python
       uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      with: { python-version: '3.12' }
 
-    # 3. Минимальные зависимости
-    - name: Install dependencies
+    # ─── install sing-box ────────────────────────────────────────────────
+    - name: Install sing-box
       run: |
-        python -m pip install --upgrade pip
-        pip install pyyaml            # для clashx_pro.yaml
+        arch="$(uname -m)"
+        url="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$arch-unknown-linux-gnu.tar.gz"
+        curl -L "$url" | tar -xz --strip-components=1 -C /usr/local/bin sing-box
+        chmod +x /usr/local/bin/sing-box
+        sing-box --version
 
-    # 4. Запускаем фильтр прокси
+    - name: Install Python deps
+      run: pip install --quiet pyyaml
+
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # 5. Коммитим результат и пушим c --force-with-lease
-    - name: Commit & push result
+    - name: Commit & push
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
         file_pattern: |
           output/Server.txt
-          output/skipped.txt
-          output/ping_debug.txt
-          output/clashx_pro.yaml
-        push_options: '--force-with-lease'   # ← ключ для безопасного форс-пуша
+        push_options: '--force-with-lease'
 
-    # 6. Загружаем артефакты (на случай, если push не сработает)
-    - name: Upload artifacts
+    - name: Upload artifact
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: proxy-results
-        path: |
-          output/Server.txt
-          output/skipped.txt
-          output/ping_debug.txt
-          output/clashx_pro.yaml
+        path: output/Server.txt
