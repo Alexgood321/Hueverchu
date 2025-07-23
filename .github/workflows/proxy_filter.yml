@@ -17,39 +17,50 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    # — 1. repo ----------------------------------------------------------------
+    - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    # — 2. python --------------------------------------------------------------
+    - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # ─── install sing-box ────────────────────────────────────────────────
+    # — 3. sing-box ------------------------------------------------------------
     - name: Install sing-box
       run: |
-        arch="$(uname -m)"
-        url="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$arch-unknown-linux-gnu.tar.gz"
-        curl -L "$url" | tar -xz --strip-components=1 -C /usr/local/bin sing-box
+        set -e
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64|amd64) SB_ARCH=linux-amd64  ;;
+          aarch64|arm64) SB_ARCH=linux-arm64 ;;
+          *) echo "Unsupported arch: $ARCH" ; exit 1 ;;
+        esac
+
+        echo "Downloading sing-box for $SB_ARCH …"
+        curl -L -o sb.tgz \
+          "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$SB_ARCH.tar.gz"
+        tar -xzf sb.tgz
+        sudo mv sing-box*/sing-box /usr/local/bin/
         chmod +x /usr/local/bin/sing-box
         sing-box --version
 
+    # — 4. deps ---------------------------------------------------------------
     - name: Install Python deps
       run: pip install --quiet pyyaml
 
+    # — 5. run filter ----------------------------------------------------------
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    - name: Commit & push
-      uses: stefanzweifel/git-auto-commit-action@v5
+    # — 6. commit & push -------------------------------------------------------
+    - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
-        file_pattern: |
-          output/Server.txt
+        file_pattern: output/Server.txt
         push_options: '--force-with-lease'
 
-    - name: Upload artifact
+    # — 7. artifact ------------------------------------------------------------
+    - uses: actions/upload-artifact@v4
       if: always()
-      uses: actions/upload-artifact@v4
       with:
         name: proxy-results
         path: output/Server.txt
