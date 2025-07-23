@@ -1,14 +1,10 @@
 name: Proxy Filter
-
 on:
-  schedule:
-    - cron:  '0 * * * *'          # запуск каждый час
+  schedule: [ { cron: '0 * * * *' } ]
   push: { branches: [ main ] }
   workflow_dispatch:
 
-concurrency:
-  group: proxy-filter
-  cancel-in-progress: true
+concurrency: { group: proxy-filter, cancel-in-progress: true }
 
 jobs:
   filter:
@@ -16,61 +12,39 @@ jobs:
     permissions: { contents: write }
 
     steps:
-    # 1. код репозитория
     - uses: actions/checkout@v4
-
-    # 2. Python 3.12
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # 3. установка sing-box (поддерживает tar.gz и raw-бинарник)
     - name: Install sing-box
       run: |
         set -euo pipefail
         case "$(uname -m)" in
-          x86_64|amd64) SB_ARCH=linux-amd64  ;;
-          aarch64|arm64) SB_ARCH=linux-arm64 ;;
-          *) echo "✖ unsupported arch"; exit 1 ;;
+          x86_64|amd64)  ARCH=linux-amd64  ;;
+          aarch64|arm64) ARCH=linux-arm64  ;;
+          *) echo "unsupported arch"; exit 1 ;;
         esac
-
-        VERSION=$(curl -sSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-                   | grep -Po '"tag_name":\s*"\K[^"]+')
-        VNUM=${VERSION#v}
-
-        BASE="https://github.com/SagerNet/sing-box/releases/download/${VERSION}"
-        TAR_URL="${BASE}/sing-box-${VNUM}-${SB_ARCH}.tar.gz"
-        RAW_URL="${BASE}/sing-box-${VNUM}-${SB_ARCH}"
-
-        echo "⬇  trying tarball → $TAR_URL"
-        if curl -fsSL "$TAR_URL" -o sb.tgz ; then
-          tar -xzf sb.tgz
-          sudo mv sing-box*/sing-box /usr/local/bin/sing-box
-        else
-          echo "tarball not found, fallback to raw binary"
-          curl -fsSL "$RAW_URL" -o /usr/local/bin/sing-box
-        fi
-
+        VER=$(curl -sSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+              | grep -Po '"tag_name":\s*"\K[^"]+')
+        V=${VER#v}
+        BASE="https://github.com/SagerNet/sing-box/releases/download/$VER/sing-box-$V-$ARCH"
+        (curl -fLS "$BASE.tar.gz" | tar -xz --strip-components=1 -C /usr/local/bin sing-box) \
+          || curl -fLS "$BASE" -o /usr/local/bin/sing-box
         chmod +x /usr/local/bin/sing-box
         sing-box version
 
-    # 4. Python-зависимости
-    - name: Install Python deps
+    - name: Install deps
       run: pip install --quiet pyyaml
 
-    # 5. Запуск фильтра прокси
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # 6. Коммит всего содержимого output/
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
-        file_pattern: output/*
+        file_pattern: output/**          # ← коммитим вообще всё в папке
         push_options: '--force-with-lease'
 
-    # 7. Артефакт на всякий случай
     - uses: actions/upload-artifact@v4
       if: always()
-      with:
-        name: proxy-results
-        path: output/*
+      with: { name: proxy-results, path: output/** }
