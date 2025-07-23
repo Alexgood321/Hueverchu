@@ -1,14 +1,9 @@
 name: Proxy Filter
-
 on:
-  schedule:
-    - cron: '0 * * * *'          # раз в час
-  push: { branches: [ main ] }
+  schedule: [{ cron: '0 * * * *' }]
+  push: { branches: [main] }
   workflow_dispatch:
-
-concurrency:
-  group: proxy-filter
-  cancel-in-progress: true
+concurrency: { group: proxy-filter, cancel-in-progress: true }
 
 jobs:
   filter:
@@ -16,62 +11,38 @@ jobs:
     permissions: { contents: write }
 
     steps:
-    # 1 ─ код репозитория
     - uses: actions/checkout@v4
-
-    # 2 ─ Python 3.12
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # 3 ─ установка sing-box (любой формат релиза)
     - name: Install sing-box
       run: |
         set -euo pipefail
-        case "$(uname -m)" in
-          x86_64|amd64)  PATTERN=linux-amd64  ;;
-          aarch64|arm64) PATTERN=linux-arm64  ;;
-          *) echo "unsupported arch"; exit 1 ;;
-        esac
-
-        # URL нужного asset’а из последнего релиза
-        ASSET_URL=$(curl -sSL https://api.github.com/repos/SagerNet/sing-box/releases/latest |
-          grep -Po '"browser_download_url":\s*"\K[^"]+' |
-          grep "$PATTERN" | head -n1)
-
-        [ -z "$ASSET_URL" ] && { echo "✖ sing-box asset not found"; exit 1; }
-        echo "⬇  $ASSET_URL"
-
-        TMP_DIR=$(mktemp -d)
-        if [[ "$ASSET_URL" == *.tar.gz ]]; then               # архив
-          curl -fsSL "$ASSET_URL" -o "$TMP_DIR/sb.tgz"
-          tar -xzf "$TMP_DIR/sb.tgz" -C "$TMP_DIR"
-          BIN=$(find "$TMP_DIR" -type f -name sing-box | head -n1)
-          sudo mv "$BIN" /usr/local/bin/sing-box
-        else                                                  # raw-бинарник
-          curl -fsSL "$ASSET_URL" -o /usr/local/bin/sing-box
+        case $(uname -m) in x86_64|amd64) PATTERN=linux-amd64;; aarch64|arm64) PATTERN=linux-arm64;; *) exit 1;; esac
+        ASSET=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest |
+                grep -Po '"browser_download_url": *"\K[^"]+' | grep "$PATTERN" | head -n1)
+        echo "asset: $ASSET"
+        TMP=$(mktemp -d)
+        if [[ $ASSET == *.tar.gz ]]; then
+          curl -sL $ASSET -o $TMP/sb.tgz && tar -xzf $TMP/sb.tgz -C $TMP
+          mv $(find $TMP -name sing-box|head -n1) /usr/local/bin/sing-box
+        else
+          curl -sL $ASSET -o /usr/local/bin/sing-box
         fi
+        chmod +x /usr/local/bin/sing-box && sing-box version
 
-        chmod +x /usr/local/bin/sing-box
-        sing-box version
-
-    # 4 ─ Python-зависимости
-    - name: Install Python deps
+    - name: Install deps
       run: pip install --quiet pyyaml
 
-    # 5 ─ запускаем фильтр
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # 6 ─ коммит всего, что лежит в output/
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
-        commit_message: "chore: update proxy lists [skip ci]"
+        commit_message: "chore: update proxy list [skip ci]"
         file_pattern: output/**
-        push_options: '--force-with-lease'
+        push_options: "--force-with-lease"
 
-    # 7 ─ артефакты
     - uses: actions/upload-artifact@v4
       if: always()
-      with:
-        name: proxy-results
-        path: output/**
+      with: { name: proxy-results, path: output/** }
