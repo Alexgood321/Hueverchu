@@ -1,48 +1,35 @@
 name: Proxy Filter
 
 on:
-  workflow_dispatch:        # ручной запуск из вкладки Actions
-  schedule:
-    - cron: '0 * * * *'     # каждый час (UTC)
+  workflow_dispatch:      # ручной запуск
+  schedule:               # + ежечасовой крон
+    - cron:  '0 * * * *'  # (UTC)
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set-up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
 
-      - name: Install deps
+      - name: Install requirements
         run: |
-          python -m pip install --upgrade pip
-          pip  install aiohttp async_timeout
+          python -m pip install -r requirements.txt
 
       - name: Run proxy filter
         run: |
           python test_servers.py \
-            --sources  sources.txt \
-            --output   output/Server.txt \
-            --debug    output/debug.log \
-            --probe    http \
-            --min-speed 100 \
-            --max-rtt   800 \
-            --min-succ  1 \
+            --sources sources.txt \
+            --output  output/Server.txt \
+            --debug   output/debug.log \
+            --probe   http \
+            --max     20 \
             --drop-ports 8880 \
             --drop-proto ss,ssr \
-            --max 20
-
-      - name: Commit & push results
-        if: success()
-        run: |
-          git config --global user.email  "actions@github.com"
-          git config --global user.name   "GitHub Actions"
-          git add output/*
-          git commit -m "Update proxies $(date -u +'%Y-%m-%d %H:%M')"
-          git push || echo "No changes"
+            --unique-country \
+            --min-succ 1 \
+            --max-rtt   800
