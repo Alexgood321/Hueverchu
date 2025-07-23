@@ -1,71 +1,30 @@
 name: Proxy Filter
-
 on:
-  schedule: [{ cron: '0 * * * *' }]
-  push:     { branches: [ main ] }
   workflow_dispatch:
-
-concurrency: { group: proxy-filter, cancel-in-progress: true }
+  schedule:
+    - cron: "17 * * * *"        # каждые час-семнадцать
 
 jobs:
   filter:
     runs-on: ubuntu-latest
-    permissions: { contents: write }
-
     steps:
-    # ── код
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    # ── Python
-    - uses: actions/setup-python@v5
-      with: { python-version: '3.12' }
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.x' }
 
-    # ── install sing-box
-    - name: Install sing-box
-      run: |
-        set -euo pipefail
-        case $(uname -m) in
-          x86_64|amd64)  PATTERN=linux-amd64  ;;
-          aarch64|arm64) PATTERN=linux-arm64  ;;
-          *) echo "unsupported arch"; exit 1 ;;
-        esac
+      - name: Install deps
+        run: python -m pip install --upgrade pip
 
-        ASSET=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest |
-                grep -Po '"browser_download_url":\s*"\K[^"]+' |
-                grep "$PATTERN" | head -n1)
-        [ -z "$ASSET" ] && { echo "asset not found"; exit 1; }
-        echo "asset → $ASSET"
+      - name: Run proxy filter
+        run: python test_servers.py
 
-        TMP=$(mktemp -d)
-        if [[ $ASSET == *.tar.gz ]]; then
-          curl -fsSL "$ASSET" -o "$TMP/sb.tgz"
-          tar -xzf "$TMP/sb.tgz" -C "$TMP"
-          BIN=$(find "$TMP" -type f -name sing-box | head -n1)
-          [ -z "$BIN" ] && { echo "bin not in archive"; exit 1; }
-          sudo install -m755 "$BIN" /usr/local/bin/sing-box
-        else
-          sudo curl -fsSL "$ASSET" -o /usr/local/bin/sing-box
-          sudo chmod 755 /usr/local/bin/sing-box
-        fi
-        sing-box version
-
-    # ── deps
-    - name: Install Python deps
-      run: pip install -q pyyaml
-
-    # ── run & лог
-    - name: Run proxy filter
-      run: |
-        python test_servers.py --output output/Server.txt | tee output/debug.log
-
-    # ── commit всего из output/
-    - uses: stefanzweifel/git-auto-commit-action@v5
-      with:
-        commit_message: "chore: update proxy list [skip ci]"
-        file_pattern: output/**
-        push_options: '--force-with-lease'
-
-    # ── artifact
-    - uses: actions/upload-artifact@v4
-      if: always()
-      with: { name: proxy-results, path: output/** }
+      - name: Commit & push result
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: update proxy lists
+          file_pattern: |
+            output/Server.txt
+            output/latency.csv
+            output/debug.log
