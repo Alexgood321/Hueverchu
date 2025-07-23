@@ -2,7 +2,7 @@ name: Proxy Filter
 
 on:
   schedule:
-    - cron:  '0 * * * *'
+    - cron:  '0 * * * *'         # каждый час
   push: { branches: [ main ] }
   workflow_dispatch:
 
@@ -17,48 +17,54 @@ jobs:
       contents: write
 
     steps:
-    # — 1. repo ----------------------------------------------------------------
+    # ─── 1. код репозитория ────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # — 2. python --------------------------------------------------------------
+    # ─── 2. Python 3.12 ────────────────────────────────────────────────────
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # — 3. sing-box ------------------------------------------------------------
+    # ─── 3. sing-box (последний релиз) ─────────────────────────────────────
     - name: Install sing-box
       run: |
-        set -e
-        ARCH=$(uname -m)
-        case "$ARCH" in
-          x86_64|amd64) SB_ARCH=linux-amd64  ;;
+        set -euo pipefail
+
+        # архитектура runner'а
+        case "$(uname -m)" in
+          x86_64|amd64) SB_ARCH=linux-amd64 ;;
           aarch64|arm64) SB_ARCH=linux-arm64 ;;
-          *) echo "Unsupported arch: $ARCH" ; exit 1 ;;
+          *) echo "Unsupported arch"; exit 1 ;;
         esac
 
-        echo "Downloading sing-box for $SB_ARCH …"
-        curl -L -o sb.tgz \
-          "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-$SB_ARCH.tar.gz"
+        # номер последнего релиза (например, v1.8.10)
+        VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+                  | grep -Po '"tag_name": *"\K[^"]+')
+
+        VER_NO_V=${VERSION#v}
+        URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VER_NO_V}-${SB_ARCH}.tar.gz"
+        echo "Downloading $URL"
+        curl -L "$URL" -o sb.tgz
         tar -xzf sb.tgz
         sudo mv sing-box*/sing-box /usr/local/bin/
         chmod +x /usr/local/bin/sing-box
         sing-box --version
 
-    # — 4. deps ---------------------------------------------------------------
+    # ─── 4. Python-зависимости ─────────────────────────────────────────────
     - name: Install Python deps
       run: pip install --quiet pyyaml
 
-    # — 5. run filter ----------------------------------------------------------
+    # ─── 5. Запускаем фильтр ───────────────────────────────────────────────
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # — 6. commit & push -------------------------------------------------------
+    # ─── 6. Коммитим результат ─────────────────────────────────────────────
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
         file_pattern: output/Server.txt
         push_options: '--force-with-lease'
 
-    # — 7. artifact ------------------------------------------------------------
+    # ─── 7. Загружаем артефакт ─────────────────────────────────────────────
     - uses: actions/upload-artifact@v4
       if: always()
       with:
