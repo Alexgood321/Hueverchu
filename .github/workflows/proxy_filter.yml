@@ -1,37 +1,39 @@
 name: Proxy Filter
 
+# ───── триггеры ──────────────────────────────────────────
 on:
-  workflow_dispatch:          # запуск вручную по кнопке “Run workflow”
-  schedule:                   # запуск по расписанию (UTC)
-    - cron: '0 * * * *'       # каждый час, ровно в 00 минут
+  workflow_dispatch:            # запуск вручную
+  schedule:                     # автоматом – каждый час (UTC)
+    - cron: '0 * * * *'         # 00-я минута каждого часа
 
+# ───── единственный job ─────────────────────────────────
 jobs:
   filter:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. получаем код репозитория
+      # 1. берём репозиторий
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. ставим Python 3.13
+      # 2. ставим нужный Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      # 3. зависимости для скрипта
-      - name: Install dependencies
+      # 3. зависимости скрипта
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install aiohttp
 
-      # 4. прогоняем фильтр-скрипт
+      # 4. запускаем фильтр
       - name: Run proxy filter
         run: python test_servers.py
 
-      # 5. коммитим результаты (список, логи и т. д.)
-      - name: Commit & push result
+      # 5. сохраняем обновлённые файлы (списки, логи и т.д.)
+      - name: Commit & push results
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: chore: update proxy lists
