@@ -1,40 +1,41 @@
 name: proxy_filter
 
 on:
-  workflow_dispatch:           # ручной запуск в-вкладке Actions
   schedule:
-    - cron:  '0 * * * *'       # раз в час
+    - cron:  '0 * * * *'      # каждый час (UTC)
+  workflow_dispatch:          # кнопка «Run workflow»
 
 jobs:
-  run-filter:
+  filter:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+        with: { python-version: '3.11', cache: pip }
 
-      - name: Install requirements
+      - name: Install deps
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
       - name: Run proxy filter
         run: |
           python test_servers.py \
             --sources  sources.txt \
             --output   output/Server.txt \
-            --debug    output/debug.log
+            --debug    output/debug.log \
+            --max      20 \
+            --probe    http \
+            --drop-ports 8880 \
+            --drop-proto ss,ssr \
+            --unique-country \
+            --min-speed 200
 
-      - name: Commit results if changed
+      - name: Commit results
         run: |
           git config user.name  "proxy-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add output/Server.txt output/debug.log || true
-          if ! git diff --cached --quiet; then
-            git commit -m "auto: update proxy list"
-            git push
-          fi
+          git config user.email "proxy-bot@users.noreply.github.com"
+          git add output/Server.txt output/debug.log
+          git diff --cached --quiet || git commit -m "auto: refresh proxies"
+          git push
