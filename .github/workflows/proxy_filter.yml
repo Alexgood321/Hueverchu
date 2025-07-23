@@ -1,23 +1,28 @@
-name: Proxy Filter / filter
+name: Proxy Filter
 
 on:
+  workflow_dispatch:        # ручной запуск из вкладки Actions
   schedule:
-    - cron: '6 * * * *'        # каждый час + несколько минут «сдвига»
-  workflow_dispatch:
+    - cron: '0 * * * *'     # каждый час (UTC)
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Install Python deps
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install aiohttp async_timeout
+          pip  install aiohttp async_timeout
 
       - name: Run proxy filter
         run: |
@@ -25,18 +30,19 @@ jobs:
             --sources  sources.txt \
             --output   output/Server.txt \
             --debug    output/debug.log \
-            --max      20 \
             --probe    http \
+            --min-speed 100 \
+            --max-rtt   800 \
+            --min-succ  1 \
             --drop-ports 8880 \
             --drop-proto ss,ssr \
-            --unique-country \
-            --min-speed 200
+            --max 20
 
-      - name: Upload results
-        uses: actions/upload-artifact@v4
-        with:
-          name: proxy-results
-          path: |
-            output/Server.txt
-            output/debug.log
-            output/latency.csv
+      - name: Commit & push results
+        if: success()
+        run: |
+          git config --global user.email  "actions@github.com"
+          git config --global user.name   "GitHub Actions"
+          git add output/*
+          git commit -m "Update proxies $(date -u +'%Y-%m-%d %H:%M')"
+          git push || echo "No changes"
