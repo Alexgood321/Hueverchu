@@ -2,7 +2,7 @@ name: Proxy Filter
 
 on:
   schedule:
-    - cron:  '0 * * * *'          # каждый час
+    - cron:  '0 * * * *'
   push: { branches: [ main ] }
   workflow_dispatch:
 
@@ -13,49 +13,59 @@ concurrency:
 jobs:
   filter:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: { contents: write }
 
     steps:
-    # ─── 1. репозиторий ────────────────────────────────────────────────────
+    # 1) код репозитория ──────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ─── 2. Python 3.12 ────────────────────────────────────────────────────
+    # 2) Python 3.12 ───────────────────────────────────────────────────────
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # ─── 3. установка sing-box ─────────────────────────────────────────────
+    # 3) Установка sing-box ────────────────────────────────────────────────
     - name: Install sing-box
       run: |
         set -euo pipefail
 
-        # архитектура runner’а
+        # архитектура
         case "$(uname -m)" in
           x86_64|amd64) SB_ARCH=linux-amd64  ;;
           aarch64|arm64) SB_ARCH=linux-arm64 ;;
           *) echo "✖ unsupported arch"; exit 1 ;;
         esac
 
-        # тег последнего релиза (vX.Y.Z / vX.Y.Z-beta.N)
+        # версия последнего релиза (пример: v1.11.15)
         VERSION=$(curl -sSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
                    | grep -Po '"tag_name":\s*"\K[^"]+')
         VNUM=${VERSION#v}
 
-        URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VNUM}-${SB_ARCH}"
-        echo "⬇  $URL"
-        curl -sSL "$URL" -o /usr/local/bin/sing-box
-        chmod +x /usr/local/bin/sing-box
-        sing-box version                # проверка
+        BASE="https://github.com/SagerNet/sing-box/releases/download/${VERSION}"
+        BIN_NAME="sing-box-${VNUM}-${SB_ARCH}"
+        TAR_URL="${BASE}/${BIN_NAME}.tar.gz"
+        RAW_URL="${BASE}/${BIN_NAME}"
 
-    # ─── 4. Python-зависимости ─────────────────────────────────────────────
+        echo "⬇  trying tarball → $TAR_URL"
+        if curl -fsSL "$TAR_URL" -o sb.tgz ; then
+          tar -xzf sb.tgz
+          sudo mv sing-box*/sing-box /usr/local/bin/sing-box
+        else
+          echo "tarball not found, fallback to raw binary"
+          curl -fsSL "$RAW_URL" -o /usr/local/bin/sing-box
+        fi
+
+        chmod +x /usr/local/bin/sing-box
+        sing-box version
+
+    # 4) Python-зависимости ────────────────────────────────────────────────
     - name: Install Python deps
       run: pip install --quiet pyyaml
 
-    # ─── 5. Запуск фильтра ─────────────────────────────────────────────────
+    # 5) Запуск фильтра ────────────────────────────────────────────────────
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # ─── 6. Коммит результата ──────────────────────────────────────────────
+    # 6) Коммит результата ────────────────────────────────────────────────
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
@@ -64,7 +74,7 @@ jobs:
           output/latency_full.csv
         push_options: '--force-with-lease'
 
-    # ─── 7. Прикладываем артефакты ─────────────────────────────────────────
+    # 7) Прикрепляем артефакт ─────────────────────────────────────────────
     - uses: actions/upload-artifact@v4
       if: always()
       with:
