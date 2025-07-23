@@ -2,7 +2,7 @@ name: Proxy Filter
 
 on:
   schedule:
-    - cron:  '0 * * * *'         # каждый час
+    - cron:  '0 * * * *'
   push: { branches: [ main ] }
   workflow_dispatch:
 
@@ -36,18 +36,19 @@ jobs:
           *) echo "Unsupported arch"; exit 1 ;;
         esac
 
-        # номер последнего релиза (например, v1.8.10)
+        # тег последнего релиза, например v1.8.10
         VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest \
                   | grep -Po '"tag_name": *"\K[^"]+')
-
         VER_NO_V=${VERSION#v}
+
         URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VER_NO_V}-${SB_ARCH}.tar.gz"
         echo "Downloading $URL"
         curl -L "$URL" -o sb.tgz
         tar -xzf sb.tgz
+
         sudo mv sing-box*/sing-box /usr/local/bin/
         chmod +x /usr/local/bin/sing-box
-        sing-box --version
+        sing-box version           # ← корректная команда
 
     # ─── 4. Python-зависимости ─────────────────────────────────────────────
     - name: Install Python deps
@@ -64,7 +65,7 @@ jobs:
         file_pattern: output/Server.txt
         push_options: '--force-with-lease'
 
-    # ─── 7. Загружаем артефакт ─────────────────────────────────────────────
+    # ─── 7. Артефакт на всякий случай ──────────────────────────────────────
     - uses: actions/upload-artifact@v4
       if: always()
       with:
