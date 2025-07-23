@@ -14,42 +14,48 @@ jobs:
   filter:
     runs-on: ubuntu-latest
     permissions:
-      contents: write             # чтобы бот мог пушить
+      contents: write
 
     steps:
-    # ─── 1. код репозитория ────────────────────────────────────────────────
+    # ─── 1. репозиторий ────────────────────────────────────────────────────
     - uses: actions/checkout@v4
 
     # ─── 2. Python 3.12 ────────────────────────────────────────────────────
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # ─── 3. sing-box (статический бинарник) ────────────────────────────────
+    # ─── 3. установка sing-box ─────────────────────────────────────────────
     - name: Install sing-box
       run: |
         set -euo pipefail
 
+        # архитектура runner’а
         case "$(uname -m)" in
-          x86_64|amd64) BIN=sing-box-linux-amd64  ;;
-          aarch64|arm64) BIN=sing-box-linux-arm64 ;;
-          *) echo "✖ Unsupported arch" ; exit 1 ;;
+          x86_64|amd64) SB_ARCH=linux-amd64  ;;
+          aarch64|arm64) SB_ARCH=linux-arm64 ;;
+          *) echo "✖ unsupported arch"; exit 1 ;;
         esac
 
-        URL="https://github.com/SagerNet/sing-box/releases/latest/download/${BIN}"
-        echo "Downloading $URL"
+        # тег последнего релиза (vX.Y.Z / vX.Y.Z-beta.N)
+        VERSION=$(curl -sSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+                   | grep -Po '"tag_name":\s*"\K[^"]+')
+        VNUM=${VERSION#v}
+
+        URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VNUM}-${SB_ARCH}"
+        echo "⬇  $URL"
         curl -sSL "$URL" -o /usr/local/bin/sing-box
         chmod +x /usr/local/bin/sing-box
-        sing-box version               # проверка
+        sing-box version                # проверка
 
     # ─── 4. Python-зависимости ─────────────────────────────────────────────
     - name: Install Python deps
       run: pip install --quiet pyyaml
 
-    # ─── 5. Запускаем фильтр ───────────────────────────────────────────────
+    # ─── 5. Запуск фильтра ─────────────────────────────────────────────────
     - name: Run proxy filter
       run: python test_servers.py --output output/Server.txt
 
-    # ─── 6. Коммитим результат ─────────────────────────────────────────────
+    # ─── 6. Коммит результата ──────────────────────────────────────────────
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
@@ -58,7 +64,7 @@ jobs:
           output/latency_full.csv
         push_options: '--force-with-lease'
 
-    # ─── 7. Артефакт (на всякий случай) ───────────────────────────────────
+    # ─── 7. Прикладываем артефакты ─────────────────────────────────────────
     - uses: actions/upload-artifact@v4
       if: always()
       with:
