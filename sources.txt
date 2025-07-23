@@ -1,3 +1,2 @@
 https://unlckmy.net/sub/u1015891s3677232p69/52a75a6c37c4798ce9e12f8bd58bb097
-https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt
-https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt
+https://raw.githubusercontent.com/shaodeqi/ss/refs/heads/main/v2
