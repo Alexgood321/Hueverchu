@@ -1,42 +1,54 @@
-name: Proxy Filter
+name: Proxy Filter            # как будет называться workflow во вкладке Actions
 
-# ───── триггеры ──────────────────────────────────────────
 on:
-  workflow_dispatch:            # запуск вручную
-  schedule:                     # автоматом – каждый час (UTC)
-    - cron: '0 * * * *'         # 00-я минута каждого часа
+  workflow_dispatch:          # ► ручной запуск (кнопка «Run workflow»)
+  schedule:                   # ► автоматический запуск каждые 60 минут
+    - cron: '0 * * * *'       #   время по UTC — в начале каждого часа
 
-# ───── единственный job ─────────────────────────────────
 jobs:
   filter:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. берём репозиторий
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    # 1. Клонируем ваш репозиторий
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      # 2. ставим нужный Python
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+    # 2. Ставим нужный Python
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'      # можно 3.12, 3.11 — что удобнее
 
-      # 3. зависимости скрипта
-      - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install aiohttp
+    # 3. Устанавливаем зависимости скрипта
+    - name: Install Python deps
+      run: |
+        python -m pip install --upgrade pip
+        # базовые зависимости; добавьте сюда, если появятся новые
+        pip install aiohttp async_timeout
 
-      # 4. запускаем фильтр
-      - name: Run proxy filter
-        run: python test_servers.py
+    # 4. Запускаем ваш фильтр-скрипт
+    #    ---output        → куда сохранить «чистый» список
+    #    --debug          → лог работы (при желании можно убрать)
+    - name: Run proxy filter
+      run: |
+        python test_servers.py \
+               --sources  sources.txt \
+               --output   output/Server.txt \
+               --debug    output/debug.log
 
-      # 5. сохраняем обновлённые файлы (списки, логи и т.д.)
-      - name: Commit & push results
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: chore: update proxy lists
-          file_pattern: |
-            output/Server.txt
-            output/*.log
+    # 5. Коммитим изменения обратно в репозиторий
+    - name: Commit & push results
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name  "github-actions[bot]"
+
+        git add output/Server.txt output/debug.log
+
+        # если изменений нет – не коммитим
+        if git diff --cached --quiet; then
+          echo "Nothing to commit"
+        else
+          git commit -m "Update filtered proxies ($(date -u '+%Y-%m-%d %H:%M'))"
+          git push
+        fi
