@@ -2,7 +2,7 @@ name: Proxy Filter
 
 on:
   schedule:
-    - cron:  '0 * * * *'
+    - cron:  '0 * * * *'          # каждый час
   push: { branches: [ main ] }
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
   filter:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write             # чтобы бот мог пушить
 
     steps:
     # ─── 1. код репозитория ────────────────────────────────────────────────
@@ -24,31 +24,22 @@ jobs:
     - uses: actions/setup-python@v5
       with: { python-version: '3.12' }
 
-    # ─── 3. sing-box (последний релиз) ─────────────────────────────────────
+    # ─── 3. sing-box (статический бинарник) ────────────────────────────────
     - name: Install sing-box
       run: |
         set -euo pipefail
 
-        # архитектура runner'а
         case "$(uname -m)" in
-          x86_64|amd64) SB_ARCH=linux-amd64 ;;
-          aarch64|arm64) SB_ARCH=linux-arm64 ;;
-          *) echo "Unsupported arch"; exit 1 ;;
+          x86_64|amd64) BIN=sing-box-linux-amd64  ;;
+          aarch64|arm64) BIN=sing-box-linux-arm64 ;;
+          *) echo "✖ Unsupported arch" ; exit 1 ;;
         esac
 
-        # тег последнего релиза, например v1.8.10
-        VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-                  | grep -Po '"tag_name": *"\K[^"]+')
-        VER_NO_V=${VERSION#v}
-
-        URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/sing-box-${VER_NO_V}-${SB_ARCH}.tar.gz"
+        URL="https://github.com/SagerNet/sing-box/releases/latest/download/${BIN}"
         echo "Downloading $URL"
-        curl -L "$URL" -o sb.tgz
-        tar -xzf sb.tgz
-
-        sudo mv sing-box*/sing-box /usr/local/bin/
+        curl -sSL "$URL" -o /usr/local/bin/sing-box
         chmod +x /usr/local/bin/sing-box
-        sing-box version           # ← корректная команда
+        sing-box version               # проверка
 
     # ─── 4. Python-зависимости ─────────────────────────────────────────────
     - name: Install Python deps
@@ -62,12 +53,16 @@ jobs:
     - uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "chore: update proxy lists [skip ci]"
-        file_pattern: output/Server.txt
+        file_pattern: |
+          output/Server.txt
+          output/latency_full.csv
         push_options: '--force-with-lease'
 
-    # ─── 7. Артефакт на всякий случай ──────────────────────────────────────
+    # ─── 7. Артефакт (на всякий случай) ───────────────────────────────────
     - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: proxy-results
-        path: output/Server.txt
+        path: |
+          output/Server.txt
+          output/latency_full.csv
