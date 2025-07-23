@@ -1,2 +1,41 @@
 Получено строк: 192
 ⚠️ 0 пригодных
+02:43:19  📄 sources.txt — добавлено 2 ссылок
+02:43:20  ✔ https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/README.md — 4,541 симв.
+02:43:20  ✔ https://unlckmy.net/sub/u1015891s3677232p69/52a75a6c37c4798ce9e12f8bd58bb097 — 1,760 симв.
+02:43:20  ✔ https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt — 49,082 симв.
+02:43:20  ⚠️  --sources — --sources
+02:43:20  ⚠️  sources.txt — sources.txt
+02:43:20  ⚠️  --output — --output
+02:43:20  ⚠️  output/Server.txt — output/Server.txt
+02:43:20  ⚠️  --debug — --debug
+02:43:20  ⚠️  output/debug.log — output/debug.log
+02:43:20  Всего URI: 200
+02:43:20     21 мс  trojan://Aimer@46.254.92.142:2087?security=tls&sni=epml.ambercc.filegear-sg.me&type=ws&pat
+02:43:20     12 мс  vless://2404f667-5969-4883-a71a-ea2e0db2d25b@104.19.222.79:2096?allowInsecure=1&sni=wwwspe
+02:43:20     14 мс  ss://YWVzLTI1Ni1nY206cEtFVzhKUEJ5VFZUTHRN@167.88.63.44:443#⚡
+02:43:20     20 мс  trojan://af4d2493-9156-4514-9f6b-ee5d1a1e4713@download2hkt.windowsupdate.lol:443?security=
+02:43:20     63 мс  ss://YWVzLTI1Ni1nY206ZmFCQW9ENTRrODdVSkc3@38.114.114.19:2376#⚡
+02:43:20     85 мс  trojan://02e653c9-7c93-46a9-999d-11834bd0c577@132.145.51.172:443?security=tls#⚡
+02:43:20     83 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpvWklvQTY5UTh5aGNRVjhrYTNQYTNB@45.158.171.110:8080#⚡
+02:43:20     81 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpvWklvQTY5UTh5aGNRVjhrYTNQYTNB@45.87.175.28:8080#⚡
+02:43:20     81 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpRQ1hEeHVEbFRUTUQ3anRnSFVqSW9q@193.29.139.138:8080#⚡
+02:43:20     86 мс  ss://YWVzLTI1Ni1nY206WTZSOXBBdHZ4eHptR0M=@149.202.82.172:3306#⚡
+02:43:20     96 мс  vless://a95b8225-c07b-47fe-b1e4-b1bda89c7f7c@www.speedtest.net:80?allowInsecure=1&sni=Www.
+02:43:20    106 мс  ss://YWVzLTI1Ni1jZmI6ZjhmN2FDemNQS2JzRjhwMw==@121.127.46.147:989#⚡
+02:43:20    102 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpmOGY3YUN6Y1BLYnNGOHAz@92.118.205.228:990#⚡
+02:43:20    122 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpkM1RwaFBQZk1rSXhGbVBKcEEwajdSa1BKSGplSHFhSmsyRDdDbzdWc
+02:43:20    148 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpmOGY3YUN6Y1BLYnNGOHAz@185.123.101.241:990#⚡
+02:43:20    169 мс  vless://ac083fa9-df9a-4722-b70d-24c17bef0516@185.243.49.205:8444?allowInsecure=0&sni=speed
+02:43:20    219 мс  trojan://b26e31e5-eac1-45b0-9069-83830bd69521@20.187.85.198:443?security=tls&sni=hkt.iamno
+02:43:20    249 мс  vless://d8dd94fd-540e-461d-b5d4-acebef02c22a@160.250.65.148:34045?allowInsecure=0&sni=visi
+02:43:20    268 мс  ss://YWVzLTI1Ni1jZmI6WG44aktkbURNMDBJZU8lIyQjZkpBTXRzRUFFVU9wSC9ZV1l0WXFERm5UMFNW@103.186.
+02:43:20    259 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTp1MTdUM0J2cFlhYWl1VzJj@series-a2-mec.samanehha.co:443#⚡
+02:43:21    558 мс  ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpOazlhc2dsRHpIemprdFZ6VGt2aGFB@arxfw2b78fi2q9hzylhn.fre
+02:43:21    708 мс  trojan://84587c21-9938-42fc-a4b0-4f72dd72b7aa@it.mjt000.com:443?security=tls&sni=it.mjt000
+02:43:21    716 мс  ss://cmM0LW1kNTplZmFuY2N5dW4@cn01.efan8867801.xyz:8766?plugin=obfs-local%3Bobfs%3Dhttp%3Bo
+02:43:21    772 мс  trojan://96983eb4-c8f1-316e-ab00-500014ed3d8b@official.taipeicitygovernment.co.ua:8443?sec
+02:43:21    864 мс  trojan://96983eb4-c8f1-316e-ab00-500014ed3d8b@official.taipeicitygovernment.if.ua:8443?sec
+02:43:21   1209 мс  ss://YWVzLTI1Ni1nY206ODIzZTEzNWVkMTAz@137.220.191.40:636#⚡
+02:43:23  💾 сохранено 20 URI → /home/runner/work/Hueverchu/Hueverchu/output/Server.txt
+02:43:23  ✔ готово: 20 лучших ссылок, min ping 12 мс
