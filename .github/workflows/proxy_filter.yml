@@ -1,7 +1,7 @@
 name: Proxy Filter
 
 on:
-  workflow_dispatch:            # ручной старт
+  workflow_dispatch:            # запуск по кнопке «Run workflow»
   schedule:
     - cron: '0 * * * *'         # каждый час (UTC)
 
@@ -10,14 +10,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ----- исходники -------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ----- Python + зависимости --------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'        # можно 3.8+
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      # -----------------------------------------------------------------
+
+      # ----- подготовка output/ ----------------------------------------
       - name: Ensure output folder exists and clear old list
         run: |
           mkdir -p output
-          : > output/Server.txt        # truncate (пустой файл)
+          : > output/Server.txt         # обнуляем файл
+      # -----------------------------------------------------------------
 
+      # ----- запуск фильтра --------------------------------------------
       - name: Run proxy filter
         run: |
           python test_servers.py \
