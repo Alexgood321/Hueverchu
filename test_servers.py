@@ -1,223 +1,198 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Фильтр публичных прокси-узлов.
-
-Из источников (--sources) вытягиваются URI
-(vless / vmess / trojan / hysteria / socks / http):
-
-  • отбрасываем схемы из --drop-proto  (по-умолчанию ss, ssr)
-  • отбрасываем узлы на портах --drop-ports  (по-умолчанию 8880)
-  • проверка (--probe):
-        tcp   – три TCP-connect-ping’а (3 с timeout), средний RTT
-        http  – скачиваем 100 KiB через прокси, скорость ≥ --min-speed kB/s
-  • --unique-country   – оставляем по одному узлу на страну (по Geo-IP)
-  • --max              – итоговое число узлов (по умолчанию 20)
-
-Результаты:
-  • output/Server.txt  – рабочие URI
-  • output/debug.log   – лог/диагностика
-Если пригодных нет – `Server.txt` затирается пустым.
-
-Пример вызова из workflow:
-    python test_servers.py \
-        --sources sources.txt \
-        --output  output/Server.txt \
-        --debug   output/debug.log \
-        --probe   http \
-        --min-speed 200 \
-        --drop-ports 8880 \
-        --drop-proto ss,ssr \
-        --unique-country
+Фильтруем подписки:
+  • публичные vless/vmess/trojan (ss и ssr исключены)
+  • RTT ≤ 400 мс (3 TCP-пинга, нужно ≥2 попадания)
+  • исключаем relay-узлы и порты 8880
+  • не более одного узла на страну
+  • максимальный размер итогового списка — 20
+  • при --probe http пытаемся скачать 200 КБ с https://speed.hetzner.de/100MB.bin
+    — если средняя скорость < 200 КБ/с, узел отбрасываем
+Результаты:  output/Server.txt, output/latency.csv, output/debug.log
 """
+
 from __future__ import annotations
-import argparse, asyncio, ipaddress, json, re, socket, time
-from base64 import b64decode, urlsafe_b64decode
+import argparse, async_timeout, aiohttp, base64, csv, ipaddress, json
+import os, re, socket, sys, time, urllib.parse
 from pathlib import Path
+from typing import Iterable, Sequence
 
-import aiohttp, async_timeout
+URI_RE      = re.compile(r'(vless|vmess|trojan)://[^\s"<>]+', re.I)
+RELAY_RE    = re.compile(r'relay', re.I)
+B64_OK_RE   = re.compile(r'^[A-Za-z0-9+/]+={0,2}$').fullmatch
+SPEED_TEST  = 'https://speed.hetzner.de/100MB.bin'   # 100 МБ файл, качаем 200 КБ
 
-# ─────────────────────────── CLI ────────────────────────────
-p = argparse.ArgumentParser()
-p.add_argument("--sources", required=True, help="файл со списком URL-источников")
-p.add_argument("--output",  required=True, help="куда писать Server.txt")
-p.add_argument("--debug",   required=True, help="файл подробного лога")
-p.add_argument("--max", type=int, default=20, help="максимум узлов")
-p.add_argument("--probe", choices=("tcp", "http"), default="tcp")
-p.add_argument("--min-speed", type=int, default=200, help="kB/s для http-probe")
-p.add_argument("--drop-ports", default="8880")
-p.add_argument("--drop-proto", default="ss,ssr")
-p.add_argument("--unique-country", action="store_true")
-args = p.parse_args()
+OUT = Path('output'); OUT.mkdir(exist_ok=True)
+TXT, CSV, DBG = OUT / 'Server.txt', OUT / 'latency.csv', OUT / 'debug.log'
 
-DROP_PORTS = {int(x) for x in args.drop_ports.split(",") if x}
-DROP_PROTO = {x.lower() for x in args.drop_proto.split(",") if x}
-MAX_KEEP   = args.max
-TEST_URL   = "https://speed.cloudflare.com/__down?bytes=100000"   # ≈100 KiB
+def log(line: str, *, end: str = '\n') -> None:
+    DBG.open('a', encoding='utf-8').write(line + end)
 
-URI_RE = re.compile(
-    r'(vless|vmess|trojan|hysteria2?|socks5?|https?)://[^\s#]+',
-    re.I
-)
+# ───── base64 helpers ──────────────────────────
+def b64d(s: str) -> str:
+    try:
+        return base64.b64decode(s + '===').decode()
+    except Exception:
+        return ''
 
-# ───────────────────────── helpers ──────────────────────────
-def _maybe_b64(txt: str) -> str:
-    """Попытаться декодировать «голую» подписку (обычн./url-safe base64)."""
-    if re.fullmatch(r'[\w\-+/]+=*', txt):
-        pad = '=' * (-len(txt) % 4)
-        for dec in (b64decode, urlsafe_b64decode):
-            try:
-                return dec(txt + pad).decode(errors="ignore")
-            except Exception:
-                pass
-    return txt
-
-def parse_source(text: str) -> list[str]:
-    """Вернуть список URI из текста источника / подписки."""
-    text = _maybe_b64(text.strip())
-    return [m.group(0) for m in URI_RE.finditer(text)]
-
-def host_port(uri: str) -> tuple[str, int] | None:
-    """Извлечь (host, port) из ссылки; для VMess – из JSON-пейлоуда."""
-    if uri.startswith("vmess://"):
+# ───── tiny sync utils ─────────────────────────
+def host_port(link: str) -> tuple[str, int] | None:
+    if link.startswith('vmess://'):
         try:
-            raw = uri[8:].split("#", 1)[0]
-            padding = '=' * (-len(raw) % 4)
-            j = json.loads(urlsafe_b64decode(raw + padding))
-            return j.get("add"), int(j.get("port", 0))
+            j = json.loads(b64d(link[8:]))
+            return j['add'], int(j['port'])
         except Exception:
             return None
-    try:
-        host_port = uri.split("@")[-1].split("?", 1)[0].split("#", 1)[0]
-        host, port = host_port.rsplit(":", 1)
-        return host, int(port)
-    except Exception:
-        return None
+    u = urllib.parse.urlsplit(link)
+    return u.hostname, u.port or 0
 
-async def tcp_ping(host: str, port: int, timeout=3) -> float | None:
-    """Возвращает RTT (мс) или None."""
+def is_private_host(host: str) -> bool:
     try:
+        ip = socket.gethostbyname(host)
+        return ipaddress.ip_address(ip).is_private
+    except Exception:
+        return True
+
+def is_relay(link: str) -> bool:
+    if RELAY_RE.search(link.split('#',1)[0]):  # быстрая проверка строки
+        return True
+    if link.startswith('vmess://'):
+        try:
+            if RELAY_RE.search(json.loads(b64d(link[8:])).get('ps', '')):
+                return True
+        except Exception:
+            pass
+    return False
+
+# ───── async helpers ───────────────────────────
+async def fetch_text(session: aiohttp.ClientSession, url: str, *, timeout: int = 15) -> str:
+    try:
+        async with async_timeout.timeout(timeout):
+            async with session.get(url) as r:
+                blob = await r.read()
+                txt  = blob.decode(errors='ignore')
+                # подписка может быть base64
+                if txt.count('\n') < 2 and B64_OK_RE(txt.strip()):
+                    txt = b64d(txt.strip())
+                return txt
+    except Exception as e:
+        log(f'⚠️  fetch fail {url}: {e}')
+        return ''
+
+async def tcp_ping(host: str, port: int, *, tries: int, timeout: int) -> float | None:
+    times: list[float] = []
+    for _ in range(tries):
         t0 = time.perf_counter()
-        r, w = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout)
-        w.close(); await w.wait_closed()
-        return (time.perf_counter() - t0) * 1000
-    except Exception:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                times.append((time.perf_counter() - t0) * 1000)
+        except Exception:
+            pass
+    if len(times) < 2:
         return None
+    return sum(times) / len(times)
 
-async def http_speed(proxy_uri: str, sess: aiohttp.ClientSession,
-                     min_kB: int) -> float | None:
-    """kB/s или None, если скорость ниже min_kB."""
+async def http_probe(session: aiohttp.ClientSession, link: str, min_speed: int) -> bool:
+    """Скачиваем первые 200 КБ файла и считаем скорость (КБ/с)."""
+    host, _ = host_port(link)
+    if not host:
+        return False
+    proxy_url = link.strip()
+    connector = aiohttp.TCPConnector(ssl=False)
     try:
-        async with async_timeout.timeout(8):
+        async with session.get(SPEED_TEST, proxy=proxy_url,
+                               headers={'Range': 'bytes=0-204799'},
+                               timeout=15, connector=connector) as r:
+            if r.status != 206:
+                return False
             t0 = time.perf_counter()
-            async with sess.get(TEST_URL, proxy=proxy_uri) as r:
-                await r.content.readexactly(100_000)
-            speed = 100_000/1024 / (time.perf_counter() - t0)
-        return speed if speed >= min_kB else None
+            _ = await r.read()          # 200 КБ
+            speed = 200 / (time.perf_counter() - t0)  # КБ/с
+            return speed >= min_speed
     except Exception:
-        return None
+        return False
+    finally:
+        await connector.close()
 
-_geo_cache: dict[str, str] = {}
-async def country(ip: str, sess: aiohttp.ClientSession) -> str:
-    if ip in _geo_cache:
-        return _geo_cache[ip]
-    try:
-        async with async_timeout.timeout(6):
-            async with sess.get(f"https://ipapi.co/{ip}/country/") as r:
-                code = (await r.text()).strip()
-    except Exception:
-        code = "__"
-    if len(code) != 2:
-        code = "__"
-    _geo_cache[ip] = code
-    return code
+# ───── main ────────────────────────────────────
+async def main(argv: Sequence[str] = sys.argv[1:]) -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument('--sources', required=True, help='файл со списками-источниками (по одному URL в строке)')
+    p.add_argument('--output',  default=TXT, type=Path)
+    p.add_argument('--debug',   default=DBG, type=Path)
+    p.add_argument('--max',     type=int, default=20)
+    p.add_argument('--probe',   choices=['tcp','http'], default='tcp')
+    p.add_argument('--drop-ports', default='8880')
+    p.add_argument('--drop-proto', default='ss,ssr')
+    p.add_argument('--unique-country', action='store_true')
+    p.add_argument('--min-speed', type=int, default=200, help='КБ/с для HTTP-probe')
+    args = p.parse_args(argv)
 
-# ────────────────────────── main ────────────────────────────
-async def main() -> None:
-    dbg  = Path(args.debug);  dbg.parent.mkdir(parents=True, exist_ok=True)
-    outf = Path(args.output); outf.parent.mkdir(parents=True, exist_ok=True)
-    dbg.write_text("")          # очистить лог
-    outf.write_text("")         # очистить результат
+    # сохраняем имя debug-файла (чтобы workflow мог его прочесть)
+    global DBG; DBG = Path(args.debug); DBG.unlink(missing_ok=True)
 
-    # 1) URL-источники
-    src_urls = [l.strip() for l in Path(args.sources).read_text().splitlines()
-                if l.strip() and not l.lstrip().startswith("#")]
+    drop_ports  = {int(x) for x in args.drop_ports.split(',') if x}
+    drop_proto  = {x.lower() for x in args.drop_proto.split(',') if x}
 
+    # ─ fetch all sources ─
     async with aiohttp.ClientSession() as sess:
+        tasks = [fetch_text(sess, u.strip()) for u in Path(args.sources).read_text().splitlines() if u.strip()]
+        raw_sources = await asyncio.gather(*tasks)
 
-        async def grab(url: str) -> str:
-            try:
-                async with async_timeout.timeout(20):
-                    async with sess.get(url) as r:
-                        return await r.text()
-            except Exception:
-                return ""
+    links: list[str] = []
+    for src_txt in raw_sources:
+        links.extend(m.group(0) for m in URI_RE.finditer(src_txt))
 
-        texts = await asyncio.gather(*(grab(u) for u in src_urls))
+    log(f'получено строк: {len(links)}')
 
-        # 2) извлекаем URI + первичная фильтрация
-        cand: list[str] = []
-        for t in texts:
-            cand.extend(parse_source(t))
+    # ─ preliminary filtering ─
+    cand: list[str] = []
+    for ln in links:
+        scheme = ln.split('://',1)[0].lower()
+        h, p_ = host_port(ln) or (None, None)
+        if (scheme in drop_proto or p_ in drop_ports or is_private_host(h or '') or is_relay(ln)):
+            continue
+        cand.append(ln)
 
-        pre: list[str] = []
-        for u in cand:
-            proto = u.split("://", 1)[0].lower()
-            hp = host_port(u)
-            if not hp:                 continue
-            if proto in DROP_PROTO:    continue
-            if hp[1] in DROP_PORTS:    continue
-            pre.append(u)
+    if not cand:
+        log('⚠️ 0 кандидатов после предварительного фильтра'); args.output.write_text('')
+        print('⚠️ 0 пригодных'); return
 
-        # 3) проверка пригодности
-        good: list[tuple[float, str]] = []
+    # ─ probe RTT/скорость ─
+    scored: list[tuple[float,str]] = []
+    async with aiohttp.ClientSession() as sess:
+        for ln in cand:
+            h, p_ = host_port(ln)
+            if not h: continue
+            rtt = await tcp_ping(h, p_, tries=3, timeout=3) if args.probe=='tcp' \
+                  else (0 if await http_probe(sess, ln, args.min_speed) else None)
+            log(f'{f"{rtt:.0f}" if rtt else "∞":>4}  {ln[:120]}')
+            if rtt is not None and rtt <= 400:
+                scored.append((rtt, ln))
 
-        async def check(u: str):
-            proto = u.split("://", 1)[0].lower()
-            host, port = host_port(u)
-            if args.probe == "http" and proto in {"vmess", "vless", "trojan"}:
-                spd = await http_speed(u, sess, args.min_speed)
-                if spd is not None:
-                    good.append((1000 / spd, u))      # speed → псевдо-RTT
-            else:
-                rtt = await tcp_ping(host, port)
-                if rtt is not None and rtt > 0:
-                    good.append((rtt, u))
+    if not scored:
+        log('⚠️ 0 пригодных'); args.output.write_text('')
+        print('⚠️ 0 пригодных'); return
 
-        await asyncio.gather(*(check(u) for u in pre))
+    scored.sort()
+    used_cc, used_ep, best = set(), set(), []
 
-        if not good:
-            dbg.write_text("⚠️ 0 пригодных\n", encoding="utf8")
-            return
-
-        good.sort(key=lambda t: t[0])                  # по «RTT»
-
-        # 4) уникальность по странам
-        final: list[str] = []
+    for rtt, ln in scored:
+        h, p_ = host_port(ln)
+        if (h,p_) in used_ep: continue
+        cc = '??'
         if args.unique_country:
-            used_cc = set()
-            for rtt, u in good:
-                host, _ = host_port(u)
-                try:
-                    ip = socket.gethostbyname(host)
-                except Exception:
-                    continue
-                cc = await country(ip, sess)
-                if cc not in used_cc:
-                    used_cc.add(cc)
-                    final.append(u)
-                if len(final) == MAX_KEEP:
-                    break
-        else:
-            final = [u for _, u in good[:MAX_KEEP]]
+            try: cc = (await aiohttp.ClientSession().get(f'https://ipapi.co/{socket.gethostbyname(h)}/country/')).text
+            except Exception: pass
+            if cc in used_cc: continue
+            used_cc.add(cc)
+        best.append(ln); used_ep.add((h,p_))
+        if len(best) == args.max: break
 
-        outf.write_text("\n".join(final) + ("\n" if final else ""),
-                        encoding="utf8")
-        dbg.write_text(
-            "\n".join(f"{rtt:.0f} ms  {u}" for rtt, u in good),
-            encoding="utf8"
-        )
+    args.output.write_text('\n'.join(best) + '\n')
+    print(f'✔ сохранено: {len(best)} | страны: {", ".join(sorted(used_cc)) or "—"}')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    import asyncio, asyncio.events
     asyncio.run(main())
