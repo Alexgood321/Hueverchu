@@ -1,0 +1,49 @@
+{
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "domain": [
+          "full:cdn.den33tpanel.online"
+        ],
+        "outboundTag": "DIRECT"
+      },
+
+      {
+        "type": "field",
+        "domain": [
+          "domain:youtu.be",
+          "domain:youtube.com",
+          "domain:youtube-nocookie.com",
+          "domain:youtubei.googleapis.com",
+          "domain:ytimg.com",
+          "domain:googlevideo.com",
+          "domain:gvt2.com"
+        ],
+        "outboundTag": "Proxy"
+      },
+
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "DIRECT"
+      },
+
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "DIRECT"
+      },
+
+      {
+        "type": "field",
+        "outboundTag": "Proxy"
+      }
+    ]
+  }
+}
